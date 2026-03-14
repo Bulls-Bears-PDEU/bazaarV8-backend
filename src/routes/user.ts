@@ -6,7 +6,7 @@ const userRouter = Router();
 userRouter.post("/create", async (req, res) => {
 	// Placeholder for user creation logic
 	try {
-		await createNewUser(req.body.email, req.body.name);
+		await createNewUser(req.body.id);
 		res.json({ message: "User created successfully" });
 	} catch (error) {
 		res.status(500).json({ error });

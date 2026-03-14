@@ -1,20 +1,19 @@
-type Stock = {
+export type Stock = {
 	id: number;
 	name: string;
 	symbol: string;
-	price: number;
-	ohlc: {
-		open: number;
-		high: number;
-		low: number;
-		close: number;
-	}[];
 	sector: string;
-	volume: number;
-	drift: number;
 	volatility: number;
 	created_at: string;
 	isLocked: boolean;
 };
 
-export default Stock;
+export type StockOHLC = {
+	id: number;
+	stock_id: number;
+	open_price: number;
+	high_price: number;
+	low_price: number;
+	close_price: number;
+	timestamp: string;
+};

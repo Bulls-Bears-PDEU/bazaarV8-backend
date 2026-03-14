@@ -1,5 +1,5 @@
-import express from "express";
 // import config from "./config/config.js";
+import express, { type Request, type Response } from "express";
 import sql from "./database/database.js";
 import stockRouter from "./routes/stock.js";
 import { clerkMiddleware } from "@clerk/express";
@@ -7,10 +7,18 @@ import userRouter from "./routes/user.js";
 import { createNewUser } from "./controller/user.js";
 import { verifyWebhook } from "@clerk/express/webhooks";
 import cors from "cors";
+import { toNodeHandler } from "better-auth/node";
+import { auth } from "./lib/auth.js";
+import { sendEmail } from "./lib/email.js";
 
 const app: express.Application = express();
 
-app.use(cors());
+app.use(
+	cors({
+		origin: "http://localhost:5173", // Update this to match your frontend URL
+		credentials: true,
+	}),
+);
 
 app.use(express.json());
 app.use(clerkMiddleware());
@@ -29,10 +37,8 @@ app.post("/webhook", async (req, res) => {
 
 		switch (event.type) {
 			case "user.created":
-				createNewUser(
-					event.data.email_addresses[0].email_address,
-					event.data.first_name ?? "User",
-				);
+				createNewUser(event.data.id);
+				console.log("User created:", event);
 				break;
 			case "user.updated":
 				console.log("User updated:", event);
@@ -52,4 +58,16 @@ app.post("/webhook", async (req, res) => {
 
 app.use("/stocks", stockRouter);
 app.use("/users", userRouter);
+app.all("/api/auth/{*any}", toNodeHandler(auth));
+
+app.post("/test-email", async (req, res) => {
+	const { to, subject, text } = req.body;
+	try {
+		await sendEmail({ to, subject, text });
+		res.status(200).json({ message: "Email sent successfully" });
+	} catch (error) {
+		console.error("Error sending email:", error);
+		res.status(500).json({ error: "Failed to send email" });
+	}
+});
 export default app;

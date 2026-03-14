@@ -3,6 +3,8 @@ import { Router } from "express";
 import {
 	addStock,
 	getAllStocks,
+	getCurrentPrice,
+	getOHLCByStockId,
 	getStockById,
 	updateStock,
 } from "../controller/stock.js";
@@ -16,6 +18,32 @@ stockRouter.get("/getAllStocks", async (_, res) => {
 		res.json(stocks);
 	} catch (error) {
 		console.error("Error fetching stocks:", error);
+		res.status(500).json({ error: "Internal Server Error" });
+	}
+});
+
+stockRouter.get("/getOHLCByStockId/:id", async (req, res) => {
+	const { id } = req.params;
+	try {
+		const ohlcData = await getOHLCByStockId(Number(id));
+		res.json(ohlcData);
+	} catch (error) {
+		console.error("Error fetching OHLC data:", error);
+		res.status(500).json({ error: "Internal Server Error" });
+	}
+});
+
+stockRouter.get("/getCurrentPrice/:id", async (req, res) => {
+	const { id } = req.params;
+	try {
+		const currentPrice = await getCurrentPrice(Number(id));
+		if (currentPrice !== undefined) {
+			res.json({ currentPrice });
+		} else {
+			res.status(404).json({ error: "Stock not found" });
+		}
+	} catch (error) {
+		console.error("Error fetching current price:", error);
 		res.status(500).json({ error: "Internal Server Error" });
 	}
 });
@@ -37,9 +65,9 @@ stockRouter.get("/getStockById/:id", async (req, res) => {
 
 stockRouter.put("/updateStock/:id", requireAuth(), async (req, res) => {
 	const { id } = req.params;
-	const stockData = req.body;
+	const { stockData, stockOHLCData } = req.body;
 	try {
-		await updateStock(Number(id), stockData);
+		await updateStock(Number(id), stockData, stockOHLCData);
 		res.json({ message: "Stock updated successfully" });
 	} catch (error) {
 		console.error("Error updating stock:", error);
@@ -48,9 +76,9 @@ stockRouter.put("/updateStock/:id", requireAuth(), async (req, res) => {
 });
 
 stockRouter.post("/addStock", requireAuth(), async (req, res) => {
-	const stockData = req.body;
+	const { stockData, initPrice } = req.body;
 	try {
-		await addStock(stockData);
+		await addStock(stockData, initPrice);
 		res.json({ message: "Stock added successfully" });
 	} catch (error) {
 		console.error("Error adding stock:", error);

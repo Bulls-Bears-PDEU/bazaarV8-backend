@@ -7,30 +7,37 @@
 	"scripts": {
 		"build": "tsc",
 		"start": "node dist/server.js",
-		"dev": "nodemon --watch src --ext ts --exec node --loader ts-node/esm src/server.ts",
-		"seed:stocks": "node --loader ts-node/esm src/scripts/generateStocks.ts"
+		"dev": "nodemon --watch src --ext ts --exec tsx src/server.ts",
+		"seed:stocks": "tsx src/scripts/generateStocks.ts"
 	},
 	"keywords": [],
 	"author": "",
 	"license": "ISC",
 	"packageManager": "pnpm@10.30.0",
 	"devDependencies": {
-		"@biomejs/biome": "2.4.2",
+		"@biomejs/biome": "2.4.6",
 		"@types/cors": "^2.8.19",
 		"@types/express": "^5.0.6",
-		"@types/node": "^25.2.3",
-		"@types/pg": "^8.16.0",
+		"@types/node": "^25.5.0",
+		"@types/nodemailer": "^7.0.11",
+		"@types/pg": "^8.18.0",
 		"add": "^2.0.6",
-		"nodemon": "^3.1.11",
-		"pnpm": "^10.30.0",
+		"nodemon": "^3.1.14",
+		"pnpm": "^10.32.1",
 		"ts-node": "^10.9.2",
+		"tsx": "^4.20.6",
 		"typescript": "^5.9.3"
 	},
 	"dependencies": {
-		"@clerk/express": "^1.7.72",
+		"@better-auth/infra": "^0.1.12",
+		"@clerk/express": "^2.0.4",
 		"@neondatabase/serverless": "^1.0.2",
+		"better-auth": "^1.5.5",
 		"cors": "^2.8.6",
 		"dotenv": "^17.3.1",
-		"express": "^5.2.1"
+		"express": "^5.2.1",
+		"nodemailer": "^8.0.2",
+		"pg": "^8.20.0",
+		"resend": "^6.9.3"
 	}
 }
