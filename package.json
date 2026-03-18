@@ -30,7 +30,6 @@
 	},
 	"dependencies": {
 		"@better-auth/infra": "^0.1.12",
-		"@clerk/express": "^2.0.4",
 		"@neondatabase/serverless": "^1.0.2",
 		"better-auth": "^1.5.5",
 		"cors": "^2.8.6",

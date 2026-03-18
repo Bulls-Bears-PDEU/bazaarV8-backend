@@ -6,6 +6,25 @@ export const getAllStocks = async () => {
 	return result as Stock[];
 };
 
+export const getCurrentPricesForAllStocks = async () => {
+	const result = await sql`
+		SELECT DISTINCT ON (stock_id)
+			stock_id,
+		    close_price AS current_price
+		FROM Stock_OHLC
+		ORDER BY stock_id, timestamp DESC;
+	`;
+	console.log("Current prices for all stocks:", result);
+	// Transform the result into an Map with stock_id as key and current_price as value
+	const currentPrices: Record<number, number> = {};
+	for (const row of result) {
+		currentPrices[row.stock_id] = row.current_price as number;
+	}
+	return currentPrices;
+};
+
+
+
 export const getStockById = async (id: number) => {
 	const result = await sql`SELECT * FROM stocks WHERE id = ${id}`;
 	return result[0] as Stock;
@@ -13,7 +32,7 @@ export const getStockById = async (id: number) => {
 
 export const getOHLCByStockId = async (stockId: number) => {
 	const result =
-		await sql`SELECT * FROM stock_ohlc WHERE stock_id = ${stockId} ORDER BY timestamp DESC`;
+		await sql`SELECT * FROM stock_ohlc WHERE stock_id = ${stockId} ORDER BY timestamp ASC`;
 	return result as StockOHLC[];
 };
 
@@ -54,6 +73,15 @@ export const addStock = async (
 	await sql`
 			INSERT INTO stock_ohlc (stock_id, open_price, high_price, low_price, close_price, timestamp)
 			VALUES (${stockId}, ${initPrice}, ${initPrice}, ${initPrice}, ${initPrice}, ${timestamp})
+		`;
+};
+
+export const addStockOHLC = async (stockId: number, ohlcData: StockOHLC) => {
+	const { open_price, high_price, low_price, close_price, timestamp } =
+		ohlcData;
+	await sql`
+			INSERT INTO stock_ohlc (stock_id, open_price, high_price, low_price, close_price, timestamp)
+			VALUES (${stockId}, ${open_price}, ${high_price}, ${low_price}, ${close_price}, ${timestamp})
 		`;
 };
 

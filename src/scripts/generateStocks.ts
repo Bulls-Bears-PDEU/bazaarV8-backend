@@ -28,8 +28,8 @@ const generateStocks = async () => {
 		const sector = sectors[Math.floor(Math.random() * sectors.length)];
 
 		await sql`
-			INSERT INTO STOCKS (symbol, name, volatility, sector)
-			VALUES (${symbol}, ${name}, ${volatility}, ${sector})
+			INSERT INTO STOCKS (id, symbol, name, volatility, sector)
+			VALUES (${i}, ${symbol}, ${name}, ${volatility}, ${sector})
 		`;
 
 		// Generate initial OHLC data for the stock
