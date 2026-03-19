@@ -14,8 +14,11 @@ app.use(
 	cors({
 		origin: "http://localhost:5173", // Update this to match your frontend URL
 		credentials: true,
+		methods: ["GET", "POST", "PUT", "DELETE"],
 	}),
 );
+app.all("/api/auth/*splat", toNodeHandler(auth));
+
 
 app.use(express.json());
 
@@ -28,7 +31,6 @@ app.get("/", async (_, res) => {
 
 app.use("/stocks", stockRouter);
 app.use("/users", userRouter);
-app.all("/api/auth/{*any}", toNodeHandler(auth));
 
 app.post("/test-email", async (req, res) => {
 	const { to, subject, text } = req.body;

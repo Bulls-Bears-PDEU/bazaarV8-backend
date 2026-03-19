@@ -13,7 +13,9 @@ export const auth = betterAuth({
 	emailAndPassword: { enabled: true, requireEmailVerification: true },
 	plugins: [
 		dash(),
-		admin(),
+		admin({
+			defaultRole: "pending",
+		}),
 		emailOTP({
 			sendVerificationOnSignUp: true,
 			async sendVerificationOTP({ email, otp, type }) {
@@ -44,6 +46,24 @@ export const auth = betterAuth({
 		additionalFields: {
 			cash_balance: { type: "number", defaultValue: 500000 },
 			frozen_balance: { type: "number", defaultValue: 0 },
+		},
+	},
+	databaseHooks: {
+		user: {
+			create: {
+				before: async (user) => {
+					if (user.role) {
+						return { data: user };
+					}
+
+					return {
+						data: {
+							...user,
+							role: "pending",
+						},
+					};
+				},
+			},
 		},
 	},
 });

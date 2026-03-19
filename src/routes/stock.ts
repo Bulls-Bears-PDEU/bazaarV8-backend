@@ -13,8 +13,12 @@ import {
 	searchStocks,
 	updateStock,
 } from "../controller/stock.js";
+import requireAdmin from "../middleware/requireAdmin.js";
+import requireApprovedUser from "../middleware/requireApprovedUser.js";
 
 const stockRouter = Router();
+
+stockRouter.use(requireApprovedUser);
 
 stockRouter.get("/getAllStocks", async (_, res) => {
 	try {
@@ -96,7 +100,7 @@ stockRouter.get("/getStockById/:id", async (req, res) => {
 	}
 });
 
-stockRouter.put("/updateStock/:id", async (req, res) => {
+stockRouter.put("/updateStock/:id", requireAdmin, async (req, res) => {
 	const { id } = req.params;
 	const stockData = req.body;
 	console.log(req.body);
@@ -109,7 +113,7 @@ stockRouter.put("/updateStock/:id", async (req, res) => {
 	}
 });
 
-stockRouter.post("/addStock", async (req, res) => {
+stockRouter.post("/addStock", requireAdmin, async (req, res) => {
 	const { stockData, initPrice } = req.body;
 	try {
 		await addStock(stockData, initPrice);
@@ -120,7 +124,7 @@ stockRouter.post("/addStock", async (req, res) => {
 	}
 });
 
-stockRouter.post("/addStockOHLC/:id", async (req, res) => {
+stockRouter.post("/addStockOHLC/:id", requireAdmin, async (req, res) => {
 	const { id } = req.params;
 	const ohlcData = req.body;
 	try {
