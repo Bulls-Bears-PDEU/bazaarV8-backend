@@ -23,8 +23,6 @@ export const getCurrentPricesForAllStocks = async () => {
 	return currentPrices;
 };
 
-
-
 export const getStockById = async (id: number) => {
 	const result = await sql`SELECT * FROM stocks WHERE id = ${id}`;
 	return result[0] as Stock;
@@ -42,23 +40,28 @@ export const getCurrentPrice = async (stockId: number) => {
 	return result[0]?.close_price as number | undefined;
 };
 
-export const updateStock = async (
-	id: number,
-	stockData: Partial<Stock>,
-	stockOHLCData: StockOHLC[],
-) => {
-	const fields = Object.keys(stockData)
-		.map((key) => `${key} = ${stockData[key as keyof Stock]}`)
-		.join(", ");
-	await sql`UPDATE stocks SET ${fields} WHERE id = ${id}`;
-	await sql`DELETE FROM stock_ohlc WHERE stock_id = ${id}`;
-	for (const ohlc of stockOHLCData) {
-		const { open_price, high_price, low_price, close_price, timestamp } = ohlc;
-		await sql`
-			INSERT INTO stock_ohlc (stock_id, open_price, high_price, low_price, close_price, timestamp)
-			VALUES (${id}, ${open_price}, ${high_price}, ${low_price}, ${close_price}, ${timestamp})
-		`;
+export const updateStock = async (id: number, stockData: Partial<Stock>) => {
+	const hasUpdates =
+		stockData.symbol !== undefined ||
+		stockData.name !== undefined ||
+		stockData.volatility !== undefined ||
+		stockData.sector !== undefined ||
+		stockData.isLocked !== undefined;
+
+	if (!hasUpdates) {
+		return;
 	}
+
+	await sql`
+		UPDATE stocks
+		SET
+			symbol = COALESCE(${stockData.symbol ?? null}, symbol),
+			name = COALESCE(${stockData.name ?? null}, name),
+			volatility = COALESCE(${stockData.volatility ?? null}, volatility),
+			sector = COALESCE(${stockData.sector ?? null}, sector),
+			locked = COALESCE(${stockData.isLocked ?? null}, locked)
+		WHERE id = ${id}
+	`;
 };
 
 export const addStock = async (
@@ -83,6 +86,27 @@ export const addStockOHLC = async (stockId: number, ohlcData: StockOHLC) => {
 			INSERT INTO stock_ohlc (stock_id, open_price, high_price, low_price, close_price, timestamp)
 			VALUES (${stockId}, ${open_price}, ${high_price}, ${low_price}, ${close_price}, ${timestamp})
 		`;
+};
+
+export const searchStocks = async (query: string) => {
+	const result = await sql`
+		SELECT * FROM stocks WHERE name_tsv @@ plainto_tsquery('english', ${query})
+	`;
+	return result;
+};
+
+export const getAllSectors = async () => {
+	const result = await sql`SELECT DISTINCT sector FROM stocks`;
+	return result.map((row) => row.sector);
+};
+
+export const getCurrentPriceForStocks = async (stockIds: number[]) => {
+	const result = await sql`
+		SELECT stock_id, close_price FROM stock_ohlc
+		WHERE stock_id = ANY(${stockIds})
+		ORDER BY stock_id, timestamp DESC
+	`;
+	return result;
 };
 
 export const deleteStock = async (id: number) => {

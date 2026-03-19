@@ -15,6 +15,11 @@ const initDB = async () => {
         locked BOOLEAN NOT NULL DEFAULT FALSE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )`;
+    // Add tsvector column for full-text search
+																await sql`
+    ALTER TABLE stocks
+    ADD COLUMN IF NOT EXISTS name_tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', name)) STORED
+    `;
 				// 			await sql`
 				// CREATE TABLE IF NOT EXISTS users (
 				//     id VARCHAR(255) PRIMARY KEY,
@@ -56,7 +61,7 @@ const initDB = async () => {
 				await sql`
     CREATE INDEX IF NOT EXISTS stock_name_fts_idx
         ON STOCKS
-        USING GIN (to_tsvector('english', name))
+        USING GIN (name_tsv)
     `;
 				await sql`
     CREATE INDEX IF NOT EXISTS user_stock_transactions_user_id_idx ON user_stock_transactions (user_id)

@@ -3,11 +3,14 @@ import { Router } from "express";
 import {
 	addStock,
 	addStockOHLC,
+	getAllSectors,
 	getAllStocks,
 	getCurrentPrice,
+	getCurrentPriceForStocks,
 	getCurrentPricesForAllStocks,
 	getOHLCByStockId,
 	getStockById,
+	searchStocks,
 	updateStock,
 } from "../controller/stock.js";
 
@@ -95,9 +98,10 @@ stockRouter.get("/getStockById/:id", async (req, res) => {
 
 stockRouter.put("/updateStock/:id", async (req, res) => {
 	const { id } = req.params;
-	const { stockData, stockOHLCData } = req.body;
+	const stockData = req.body;
+	console.log(req.body);
 	try {
-		await updateStock(Number(id), stockData, stockOHLCData);
+		await updateStock(Number(id), stockData);
 		res.json({ message: "Stock updated successfully" });
 	} catch (error) {
 		console.error("Error updating stock:", error);
@@ -128,5 +132,36 @@ stockRouter.post("/addStockOHLC/:id", async (req, res) => {
 	}
 });
 
+stockRouter.get("/searchStocks", async (req, res) => {
+	const { query } = req.query;
+	try {
+		const stocks = await searchStocks(String(query));
+		res.json(stocks);
+	} catch (error) {
+		console.error("Error searching stocks:", error);
+		res.status(500).json({ error: "Internal Server Error" });
+	}
+});
+
+stockRouter.get("/getAllSectors", async (_, res) => {
+	try {
+		const sectors = await getAllSectors();
+		res.json(sectors);
+	} catch (error) {
+		console.error("Error fetching sectors:", error);
+		res.status(500).json({ error: "Internal Server Error" });
+	}
+});
+
+stockRouter.get("/getCurrentPricesForAllStocks", async (req, res) => {
+	try {
+		const stockIds = (req.query.stockIds as string).split(",").map(Number);
+		const prices = await getCurrentPriceForStocks(stockIds);
+		res.json(prices);
+	} catch (error) {
+		console.error("Error fetching current prices:", error);
+		res.status(500).json({ error: "Internal Server Error" });
+	}
+});
 
 export default stockRouter;

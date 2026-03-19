@@ -1,12 +1,13 @@
 export type Stock = {
-	id: number;
-	name: string;
-	symbol: string;
-	sector: string;
-	volatility: number;
-	created_at: string;
-	isLocked: boolean;
-};
+		id: number;
+		name: string;
+		symbol: string;
+		sector: string;
+		volatility: number;
+		created_at: string;
+		isLocked: boolean;
+		name_tsv: string;
+	};
 
 export type StockOHLC = {
 	id: number;
