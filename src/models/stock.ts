@@ -1,13 +1,13 @@
 export type Stock = {
-		id: number;
-		name: string;
-		symbol: string;
-		sector: string;
-		volatility: number;
-		created_at: string;
-		isLocked: boolean;
-		name_tsv: string;
-	};
+	id: number;
+	name: string;
+	symbol: string;
+	sector: string;
+	volatility: number;
+	created_at: string;
+	isLocked: boolean;
+	name_tsv: string;
+};
 
 export type StockOHLC = {
 	id: number;
@@ -17,4 +17,10 @@ export type StockOHLC = {
 	low_price: number;
 	close_price: number;
 	timestamp: string;
+};
+
+export type StockPrice = {
+	price: number;
+	indicator?: "up" | "down" | "neutral";
+	priceChange?: number;
 };

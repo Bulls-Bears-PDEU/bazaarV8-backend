@@ -15,8 +15,8 @@ const initDB = async () => {
         locked BOOLEAN NOT NULL DEFAULT FALSE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )`;
-    // Add tsvector column for full-text search
-																await sql`
+				// Add tsvector column for full-text search
+				await sql`
     ALTER TABLE stocks
     ADD COLUMN IF NOT EXISTS name_tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', name)) STORED
     `;
@@ -57,6 +57,22 @@ const initDB = async () => {
         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )`;
 
+				await sql`
+    CREATE TABLE IF NOT EXISTS news (
+        id SERIAL PRIMARY KEY,
+        title VARCHAR(621) NOT NULL,
+        content TEXT NOT NULL,
+                is_released BOOLEAN NOT NULL DEFAULT FALSE,
+        release_at TIMESTAMP NOT NULL,
+        affected_sectors JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`;
+
+				await sql`
+        ALTER TABLE news
+        ADD COLUMN IF NOT EXISTS is_released BOOLEAN NOT NULL DEFAULT FALSE
+        `;
+
 				// Indexes for faster search and retrieval
 				await sql`
     CREATE INDEX IF NOT EXISTS stock_name_fts_idx
@@ -80,6 +96,12 @@ const initDB = async () => {
     `;
 				await sql`
     CREATE INDEX IF NOT EXISTS stock_ohlc_stock_id_timestamp_idx ON stock_ohlc (stock_id, timestamp DESC)
+    `;
+				await sql`
+    CREATE INDEX IF NOT EXISTS news_release_at_idx ON news (release_at DESC)
+    `;
+				await sql`
+    CREATE INDEX IF NOT EXISTS news_affected_sectors_idx ON news USING GIN (affected_sectors)
     `;
 };
 

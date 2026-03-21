@@ -1,6 +1,7 @@
 // import config from "./config/config.js";
 import express, { type Request, type Response } from "express";
 import sql from "./database/database.js";
+import newsRouter from "./routes/news.js";
 import stockRouter from "./routes/stock.js";
 import userRouter from "./routes/user.js";
 import cors from "cors";
@@ -30,6 +31,7 @@ app.get("/", async (_, res) => {
 });
 
 app.use("/stocks", stockRouter);
+app.use("/news", newsRouter);
 app.use("/users", userRouter);
 
 app.post("/test-email", async (req, res) => {
