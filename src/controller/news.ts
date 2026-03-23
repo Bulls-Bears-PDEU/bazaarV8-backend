@@ -10,7 +10,7 @@ export const getAllNews = async () => {
 			is_released AS "isReleased",
 			release_at,
 			created_at,
-			affected_sectors
+			affected_sectors AS "affected_stocks"
 		FROM news
 		WHERE is_released = TRUE
 		ORDER BY release_at DESC, created_at DESC
@@ -27,7 +27,7 @@ export const getAllNewsAdmin = async () => {
 			is_released AS "isReleased",
 			release_at,
 			created_at,
-			affected_sectors
+			affected_sectors AS "affected_stocks"
 		FROM news
 		ORDER BY release_at DESC, created_at DESC
 	`;
@@ -43,7 +43,7 @@ export const getNewsById = async (id: number) => {
 			is_released AS "isReleased",
 			release_at,
 			created_at,
-			affected_sectors
+			affected_sectors AS "affected_stocks"
 		FROM news
 		WHERE id = ${id}
 	`;
@@ -51,11 +51,11 @@ export const getNewsById = async (id: number) => {
 };
 
 export const addNews = async (newsData: Omit<News, "id" | "created_at">) => {
-	const { title, content, isReleased, release_at, affected_sectors } = newsData;
+	const { title, content, isReleased, release_at, affected_stocks } = newsData;
 	console.log("Adding news with data:", newsData);
 	await sql`
 		INSERT INTO news (title, content, is_released, release_at, affected_sectors)
-		VALUES (${title}, ${content}, ${isReleased ?? false}, ${release_at}, ${JSON.stringify(affected_sectors)})
+		VALUES (${title}, ${content}, ${isReleased ?? false}, ${release_at}, ${JSON.stringify(affected_stocks ?? {})})
 	`;
 };
 
@@ -65,7 +65,7 @@ export const updateNews = async (id: number, newsData: Partial<News>) => {
 		newsData.content !== undefined ||
 		newsData.isReleased !== undefined ||
 		newsData.release_at !== undefined ||
-		newsData.affected_sectors !== undefined;
+		newsData.affected_stocks !== undefined;
 
 	if (!hasUpdates) {
 		return;
@@ -78,7 +78,7 @@ export const updateNews = async (id: number, newsData: Partial<News>) => {
 			content = COALESCE(${newsData.content ?? null}, content),
 			is_released = COALESCE(${newsData.isReleased ?? null}, is_released),
 			release_at = COALESCE(${newsData.release_at ?? null}, release_at),
-			affected_sectors = COALESCE(${JSON.stringify(newsData.affected_sectors ?? null)}::jsonb, affected_sectors)
+			affected_sectors = COALESCE(${JSON.stringify(newsData.affected_stocks ?? null)}::jsonb, affected_sectors)
 		WHERE id = ${id}
 	`;
 };
