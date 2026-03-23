@@ -69,6 +69,62 @@ const initDB = async () => {
     )`;
 
 				await sql`
+        CREATE TABLE IF NOT EXISTS ipo (
+            id SERIAL PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            symbol VARCHAR(20) NOT NULL,
+            close_date TIMESTAMP NOT NULL,
+            open_date TIMESTAMP NOT NULL,
+            allotment_date TIMESTAMP NOT NULL,
+            subscription_rate NUMERIC(10, 2) NOT NULL DEFAULT 0,
+            sector VARCHAR(100) NOT NULL,
+            is_open_to_subscription BOOLEAN NOT NULL DEFAULT FALSE,
+            lot_size INTEGER NOT NULL,
+            max_price NUMERIC(15, 2) NOT NULL,
+            min_price NUMERIC(15, 2) NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'dormant' CHECK (status IN ('dormant', 'upcoming', 'open', 'closed', 'listed', 'withdrawn')),
+            shares_offered BIGINT NOT NULL,
+            listing_price NUMERIC(15, 2) NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )`;
+
+			await sql`
+          ALTER TABLE ipo
+          DROP COLUMN IF EXISTS issue_type
+          `;
+
+				await sql`
+          ALTER TABLE ipo
+          ALTER COLUMN close_date TYPE TIMESTAMP
+          `;
+
+				await sql`
+          ALTER TABLE ipo
+          ALTER COLUMN open_date TYPE TIMESTAMP
+          `;
+
+				await sql`
+          ALTER TABLE ipo
+          ALTER COLUMN allotment_date TYPE TIMESTAMP
+          `;
+
+				await sql`
+          ALTER TABLE ipo
+          ALTER COLUMN status SET DEFAULT 'dormant'
+          `;
+
+				await sql`
+          ALTER TABLE ipo
+          DROP CONSTRAINT IF EXISTS ipo_status_check
+          `;
+
+				await sql`
+          ALTER TABLE ipo
+          ADD CONSTRAINT ipo_status_check CHECK (status IN ('dormant', 'upcoming', 'open', 'closed', 'listed', 'withdrawn'))
+          `;
+
+				await sql`
         ALTER TABLE news
         ADD COLUMN IF NOT EXISTS is_released BOOLEAN NOT NULL DEFAULT FALSE
         `;
@@ -103,6 +159,15 @@ const initDB = async () => {
 				await sql`
     CREATE INDEX IF NOT EXISTS news_affected_sectors_idx ON news USING GIN (affected_sectors)
     `;
+				await sql`
+        CREATE INDEX IF NOT EXISTS ipo_open_date_idx ON ipo (open_date DESC)
+        `;
+				await sql`
+        CREATE INDEX IF NOT EXISTS ipo_status_idx ON ipo (status)
+        `;
+				await sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS ipo_symbol_idx ON ipo (symbol)
+        `;
 };
 
 initDB().catch((err) => {

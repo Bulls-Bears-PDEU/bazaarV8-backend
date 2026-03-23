@@ -2,6 +2,7 @@
 import express, { type Request, type Response } from "express";
 import sql from "./database/database.js";
 import newsRouter from "./routes/news.js";
+import ipoRouter from "./routes/ipo.js";
 import stockRouter from "./routes/stock.js";
 import userRouter from "./routes/user.js";
 import cors from "cors";
@@ -15,7 +16,7 @@ app.use(
 	cors({
 		origin: "http://localhost:5173", // Update this to match your frontend URL
 		credentials: true,
-		methods: ["GET", "POST", "PUT", "DELETE"],
+		methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
 	}),
 );
 app.all("/api/auth/*splat", toNodeHandler(auth));
@@ -32,6 +33,7 @@ app.get("/", async (_, res) => {
 
 app.use("/stocks", stockRouter);
 app.use("/news", newsRouter);
+app.use("/ipos", ipoRouter);
 app.use("/users", userRouter);
 
 app.post("/test-email", async (req, res) => {
