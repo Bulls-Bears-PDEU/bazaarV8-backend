@@ -9,6 +9,9 @@ import cors from "cors";
 import { toNodeHandler } from "better-auth/node";
 import { auth } from "./lib/auth.js";
 import { sendEmail } from "./lib/email.js";
+import { createServer } from "node:http";
+import { Server } from "socket.io";
+import { stockSimulator } from "./stockEngine.js";
 
 const app: express.Application = express();
 
@@ -20,7 +23,6 @@ app.use(
 	}),
 );
 app.all("/api/auth/*splat", toNodeHandler(auth));
-
 
 app.use(express.json());
 
@@ -46,4 +48,27 @@ app.post("/test-email", async (req, res) => {
 		res.status(500).json({ error: "Failed to send email" });
 	}
 });
-export default app;
+
+const httpServer = createServer(app);
+const io = new Server(httpServer, {
+	cors: {
+		origin: "*", // Update this to match frontend URL
+		methods: ["GET", "POST"],
+	},
+});
+
+io.on("connection", (socket) => {
+	console.log("A client connected:", socket.id);
+	socket.on("disconnect", () => {
+		console.log("A client disconnected:", socket.id);
+	});
+});
+
+// Run the stock simulator every 5 seconds.
+setInterval(() => {
+	stockSimulator(io).catch((err) => {
+		console.error("Error in stock simulator:", err);
+	});
+}, 1000);
+
+export default httpServer;
