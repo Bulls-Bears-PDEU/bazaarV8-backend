@@ -1,8 +1,10 @@
 ## What is a GBM model?
-A **geometric Brownian motion** (**GBM**), also known as an **exponential Brownian motion**, is a continuous-time [stochastic process](https://en.wikipedia.org/wiki/Stochastic_process "Stochastic process") in which the [logarithm](https://en.wikipedia.org/wiki/Logarithm "Logarithm") of the randomly varying quantity follows a [Brownian motion](https://en.wikipedia.org/wiki/Wiener_process "Wiener process") with [drift](https://en.wikipedia.org/wiki/Stochastic_drift "Stochastic drift").
-*Source: https://en.wikipedia.org/wiki/Geometric_Brownian_motion
+A **geometric Brownian motion** (**GBM**), also known as an **exponential Brownian motion**, is a continuous-time [stochastic process](https://en.wikipedia.org/wiki/Stochastic_process "Stochastic process") in which the [logarithm](https://en.wikipedia.org/wiki/Logarithm "Logarithm") of the randomly varying quantity follows a [Brownian motion](https://en.wikipedia.org/wiki/Wiener_process "Wiener process") with [drift](https://en.wikipedia.org/wiki/Stochastic_drift "Stochastic drift"). <br/>
+*Source: https://en.wikipedia.org/wiki/Geometric_Brownian_motion*
 
 ## Model Equation and Parameters
+<img width="569" height="113" alt="image" src="https://github.com/user-attachments/assets/e0366be5-efc0-4ae5-973b-63866b3cf8c5" />
+
 - **$S_t$**: The new stock price at the current tick or day.
 - **$S_{t-1}$**: The known stock price from the previous tick or day.
 - **$\exp()$**: The exponential function ($e^x$). This is crucial because it ensures your stock prices can never drop below zero, which is a fundamental rule of real-world stock markets.
@@ -16,4 +18,6 @@ A **geometric Brownian motion** (**GBM**), also known as an **exponential Bro
 So, we have the mathematical equation that we will be using in the engine file. Lets take an example to calculate the stock price for few equations by hand to make the working clear, then you can refer to the engine file to look at the code and see how is the model implemented practically.
 
 ##### Example:
+
 let, $S_{t-1}$ = Rs. 690 (This will act as our starting point), $\mu$ (Drift) = 0.25 (This mean annually the stock will grow 25%), $\sigma$ (Volatility) = 0.35 (This is a random value which will act as a basis for adding entropy and realism to the market engine generation), $\Delta t$ (Time Step) = 1/907200 (Since we are calculating price at each second), Z = a random number between [-1,1] that will generated each second for shock factor.
+![Calcs](https://github.com/user-attachments/assets/3099d444-9424-4c29-a3a1-68a56d8f1786)
