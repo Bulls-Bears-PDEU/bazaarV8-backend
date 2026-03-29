@@ -64,7 +64,7 @@ const initDB = async () => {
         content TEXT NOT NULL,
                 is_released BOOLEAN NOT NULL DEFAULT FALSE,
         release_at TIMESTAMP NOT NULL,
-        affected_sectors JSONB NOT NULL DEFAULT '{}'::jsonb,
+        affected_stocks JSONB NOT NULL DEFAULT '{}'::jsonb,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )`;
 
@@ -157,7 +157,7 @@ const initDB = async () => {
     CREATE INDEX IF NOT EXISTS news_release_at_idx ON news (release_at DESC)
     `;
 				await sql`
-    CREATE INDEX IF NOT EXISTS news_affected_sectors_idx ON news USING GIN (affected_sectors)
+    CREATE INDEX IF NOT EXISTS news_affected_stocks_idx ON news USING GIN (affected_stocks)
     `;
 				await sql`
         CREATE INDEX IF NOT EXISTS ipo_open_date_idx ON ipo (open_date DESC)

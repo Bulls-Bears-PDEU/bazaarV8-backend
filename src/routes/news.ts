@@ -11,6 +11,7 @@ import {
 } from "../controller/news.js";
 import requireAdmin from "../middleware/requireAdmin.js";
 import requireApprovedUser from "../middleware/requireApprovedUser.js";
+import eventEmitter from "../eventEmitter.js";
 
 const newsRouter = Router();
 
@@ -93,6 +94,11 @@ newsRouter.patch("/updateReleaseStatus/:id", requireAdmin, async (req, res) => {
 
 	try {
 		await updateNewsReleaseStatus(Number(id), isReleased);
+
+		if (isReleased) {
+			// Emit an event when news is released
+			eventEmitter.emit("newsReleased", { id: Number(id) });
+		}
 		res.json({ message: "News release status updated successfully" });
 	} catch (error) {
 		console.error("Error updating news release status:", error);

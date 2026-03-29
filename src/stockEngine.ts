@@ -6,6 +6,7 @@ import type { Server } from "socket.io";
 import sql from "./database/database.js";
 import config from "./config/config.js";
 import type { StockOHLC } from "./models/stock.js";
+import eventEmitter from "./eventEmitter.js";
 
 const TIME_STEP = 1 / 907200; // Delta T
 const DRIFT = 0.15; // TODO: Use value from market table, to allow for changing market conditions/**
@@ -21,6 +22,58 @@ type LiveStockState = {
 };
 
 const liveStockState = new Map<number, LiveStockState>();
+
+// Store active news effects to modify drift temporarily
+type NewsImpact = {
+	extraDrift: number;
+	expiresAt: number;
+};
+const activeImpacts = new Map<number | string, NewsImpact[]>();
+
+// Listen for news releases globally (outside the simulation loop)
+eventEmitter.on("newsReleased", async ({ id }: { id: number }) => {
+	console.log(`Received newsReleased event for news ID ${id}`);
+	try {
+		const newsItem = await sql`
+			SELECT affected_stocks
+			FROM news
+			WHERE id = ${id}
+		`;
+
+		if (newsItem.length === 0) {
+			console.error(`No news found with ID ${id}`);
+			return;
+		}
+
+		const affectedStocks: Record<string, number> = newsItem[0].affected_stocks;
+		if (!affectedStocks) return;
+
+		// Apply the impact over 1 minute (60 ticks if ~1 tick per sec)
+		const durationMs = 60 * 1000;
+		const ticksForDuration = 60;
+
+		for (const [identifier, impact] of Object.entries(affectedStocks)) {
+			// Convert raw percentage impact into drift increase over the timeline
+			const extraDrift = impact / (ticksForDuration * TIME_STEP);
+
+			const parsedId = parseInt(identifier, 10);
+			const key = isNaN(parsedId) ? identifier : parsedId;
+
+			const existing = activeImpacts.get(key) || [];
+			existing.push({
+				extraDrift,
+				expiresAt: Date.now() + durationMs,
+			});
+			activeImpacts.set(key, existing);
+
+			console.log(
+				`Applied temporary drift of ${extraDrift.toFixed(4)} to stock ${identifier} for ${durationMs / 1000}s (impact: ${impact})`,
+			);
+		}
+	} catch (error) {
+		console.error("Error processing news release impact:", error);
+	}
+});
 
 const sampleStandardNormal = (): number => {
 	// Box-Muller transform for Z ~ N(0, 1)
@@ -39,10 +92,12 @@ const sampleStandardNormal = (): number => {
 /*
  * @param initialOHLC : S_{t-1} = initialOHLC.close,
  * @param volatility : σ (sigma), the volatility of the stock
+ * @param drift: μ (mu), the drift of the stock
  */
 export const generateStockPrice = (
 	candleStick: Omit<StockOHLC, "id">,
 	volatility: number,
+	drift: number = DRIFT,
 	noOfTicks = DEFAULT_TICKS_TO_AGGREGATE,
 ): Omit<StockOHLC, "id"> => {
 	const openPrice = candleStick.close_price;
@@ -55,7 +110,7 @@ export const generateStockPrice = (
 		closePrice =
 			closePrice *
 			Math.exp(
-				(DRIFT - 0.5 * volatility ** 2) * TIME_STEP +
+				(drift - 0.5 * volatility ** 2) * TIME_STEP +
 					volatility * z * Math.sqrt(TIME_STEP),
 			);
 
@@ -116,10 +171,11 @@ const initializeLiveStockState = async (stockId: number) => {
 };
 
 export const stockSimulator = async (io: Server) => {
-	const stocks = await sql`SELECT id, volatility FROM stocks`;
-
+	const stocks = await sql`SELECT id, symbol, volatility FROM stocks`;
+	
 	for (const stock of stocks) {
 		const stockId = stock.id;
+		const symbol = stock.symbol;
 		const volatility = stock.volatility;
 
 		if (!liveStockState.has(stockId)) {
@@ -134,12 +190,42 @@ export const stockSimulator = async (io: Server) => {
 			continue;
 		}
 
+		// Calculate current drift based on active news effects
+		let currentDrift = DRIFT;
+		const now = Date.now();
+
+		let idImpacts = activeImpacts.get(stockId) || [];
+		if (idImpacts.length > 0) {
+			idImpacts = idImpacts.filter((eff) => now < eff.expiresAt);
+			if (idImpacts.length > 0) {
+				activeImpacts.set(stockId, idImpacts);
+			} else {
+				activeImpacts.delete(stockId);
+			}
+			for (const eff of idImpacts) {
+				currentDrift += eff.extraDrift;
+			}
+		}
+
+		let symbolImpacts = activeImpacts.get(symbol) || [];
+		if (symbolImpacts.length > 0) {
+			symbolImpacts = symbolImpacts.filter((eff) => now < eff.expiresAt);
+			if (symbolImpacts.length > 0) {
+				activeImpacts.set(symbol, symbolImpacts);
+			} else {
+				activeImpacts.delete(symbol);
+			}
+			for (const eff of symbolImpacts) {
+				currentDrift += eff.extraDrift;
+			}
+		}
+
 		const tickResult = generateStockPrice(
 			stockState.currentCandle,
 			volatility,
+			currentDrift,
 			1,
 		);
-
 		if (stockState.ticksInCurrentCandle === 0) {
 			// First tick of a new candle body: initialize open, high, low
 			stockState.currentCandle = {

@@ -21,3 +21,9 @@ So, we have the mathematical equation that we will be using in the engine file. 
 
 let, $S_{t-1}$ = Rs. 690 (This will act as our starting point), $\mu$ (Drift) = 0.25 (This mean annually the stock will grow 25%), $\sigma$ (Volatility) = 0.35 (This is a random value which will act as a basis for adding entropy and realism to the market engine generation), $\Delta t$ (Time Step) = 1/907200 (Since we are calculating price at each second), Z = a random number between [-1,1] that will generated each second for shock factor.
 ![Calcs](https://github.com/user-attachments/assets/3099d444-9424-4c29-a3a1-68a56d8f1786)
+
+## News Data and Directed Impacts
+
+When a `newsReleased` event is triggered, temporary drift modifiers are applied to the Geometric Brownian Motion (GBM) model to simulate the market's reaction to the news. These targeted adjustments are tracked in the `activeImpacts` map, allowing the simulation to momentarily override the base drift ($\mu$) with directional momentum.
+
+Each news event impact runs on a 60-second execution lifecycle. During this brief 60-second window, the modified drift steers the generated stock prices either upwards or downwards, depending on the severity and sentiment of the news. Once the 60 seconds elapse, the impact is removed from the `activeImpacts` map, and the stock's price generation seamlessly returns to its baseline GBM trajectory.

@@ -5,5 +5,5 @@ export type News = {
 		isReleased: boolean;
 		release_at: string;
 		created_at: string;
-		affected_stocks: Record<string, number>; // stock id to impact percentage mapping
+		affected_stocks: Record<string, number>[]; // stock symbol to impact percentage mapping
 	};

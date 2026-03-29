@@ -64,7 +64,7 @@ io.on("connection", (socket) => {
 	});
 });
 
-// Run the stock simulator every 5 seconds.
+// Run the stock simulator every 1 seconds.
 setInterval(() => {
 	stockSimulator(io).catch((err) => {
 		console.error("Error in stock simulator:", err);
