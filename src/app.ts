@@ -12,6 +12,8 @@ import { sendEmail } from "./lib/email.js";
 import { createServer } from "node:http";
 import { Server } from "socket.io";
 import { stockSimulator } from "./stockEngine.js";
+import leaderboardRouter from "./routes/leaderboard.js";
+import { broadcastLeaderboard } from "./controller/leaderboard.js";
 
 const app: express.Application = express();
 
@@ -37,6 +39,7 @@ app.use("/stocks", stockRouter);
 app.use("/news", newsRouter);
 app.use("/ipos", ipoRouter);
 app.use("/users", userRouter);
+app.use("/leaderboard", leaderboardRouter);
 
 app.post("/test-email", async (req, res) => {
 	const { to, subject, text } = req.body;
@@ -71,4 +74,11 @@ setInterval(() => {
 	});
 }, 1000);
 
-export default httpServer;
+// Broadcast the leaderboard every 2 seconds via WebSockets.
+setInterval(() => {
+	broadcastLeaderboard(io).catch((err) => {
+		console.error("Error broadcasting leaderboard:", err);
+	});
+}, 2000);
+
+export default httpServer;		
