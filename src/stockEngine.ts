@@ -3,13 +3,47 @@
  */
 
 import type { Server } from "socket.io";
-import sql from "./database/database.js";
 import config from "./config/config.js";
-import type { StockOHLC } from "./models/stock.js";
+import { getMarketState } from "./controller/market.js";
+import sql from "./database/database.js";
 import eventEmitter from "./eventEmitter.js";
+import type { MarketSentiment } from "./models/market.js";
+import type { StockOHLC } from "./models/stock.js";
 
 const TIME_STEP = 1 / 907200; // Delta T
-const DRIFT = 0.15; // TODO: Use value from market table, to allow for changing market conditions/**
+const DRIFT = 0.15; // Baseline drift, used when the market sentiment is neutral
+
+// Admin-selected market sentiment tilts the baseline drift (mu) of every stock:
+// bullish upwards, bearish downwards, neutral leaves the baseline untouched.
+//
+// The tilt is measured in standard deviations per hour rather than as a fixed
+// percentage, because a fixed percentage disappears into the noise as soon as a
+// stock is volatile: at a volatility of 13 a 6%/hour tilt competes with 84% of
+// hourly noise, so a bearish market visibly rises most of the time.
+const TICKS_PER_HOUR = 3600;
+const SENTIMENT_SIGMA_PER_HOUR: Record<MarketSentiment, number> = {
+	bullish: 1,
+	bearish: -1,
+	neutral: 0,
+};
+
+const driftForSentiment = (
+	sentiment: MarketSentiment,
+	volatility: number,
+): number => {
+	const horizon = TICKS_PER_HOUR * TIME_STEP;
+
+	// GBM moves the median by (mu - sigma^2/2), so at high volatility that second
+	// term alone buries the price (-30%/hour at a volatility of 13) no matter
+	// which way an admin sets the sentiment. Adding it back makes neutral mean
+	// flat and lets the tilt below decide the direction.
+	const medianDrag = 0.5 * volatility ** 2;
+	const tilt =
+		((SENTIMENT_SIGMA_PER_HOUR[sentiment] ?? 0) * volatility) /
+		Math.sqrt(horizon);
+
+	return DRIFT + medianDrag + tilt;
+};
 const DEFAULT_TICKS_TO_AGGREGATE = 10; // Number of ticks to aggregate for OHLC generation, default is 10, which corresponds to 1 candle of 30 seconds, as the stock price is updated every second in the generateStockPrice function. So, 30 ticks will give us 1 minute of OHLC data for each stock.
 // const DB_UPDATE_CANDLE_COUNT = 2;`
 
@@ -19,7 +53,13 @@ type LiveStockState = {
 	currentCandle: Candle;
 	ticksInCurrentCandle: number;
 	pendingDbCandles: Candle[];
+	// Completed candles kept in memory regardless of ENABLE_STOCK_DB_UPDATES, so
+	// the market overview reflects the running simulation even when nothing is
+	// being persisted.
+	recentCandles: Candle[];
 };
+
+const MAX_RECENT_CANDLES = 500;
 
 const liveStockState = new Map<number, LiveStockState>();
 
@@ -167,16 +207,67 @@ const initializeLiveStockState = async (stockId: number) => {
 		},
 		ticksInCurrentCandle: 0,
 		pendingDbCandles: [],
+		recentCandles: [],
 	});
 };
 
+/**
+ * The live view of the market straight from the simulator: the candle each
+ * stock is currently building plus the completed ones still held in memory.
+ */
+export const getLiveMarketData = () => {
+	const live = new Map<number, { current: Candle; recent: Candle[] }>();
+	for (const [stockId, state] of liveStockState) {
+		live.set(stockId, {
+			current: { ...state.currentCandle },
+			recent: [...state.recentCandles],
+		});
+	}
+	return live;
+};
+
+// Wall clock at which the market was paused, so news impacts (which expire on
+// wall clock time) can be extended by however long the market stood still.
+let pausedSince: number | null = null;
+
+const shiftActiveImpacts = (offsetMs: number) => {
+	for (const impacts of activeImpacts.values()) {
+		for (const impact of impacts) {
+			impact.expiresAt += offsetMs;
+		}
+	}
+};
+
 export const stockSimulator = async (io: Server) => {
+	const market = await getMarketState();
+
+	// While the market is paused the simulation stands completely still: no new
+	// ticks, no emitted prices and no OHLC rows written. Candle timestamps are
+	// derived from the previous candle rather than the wall clock, so the
+	// simulated clock simply resumes where it left off.
+	if (market.is_paused) {
+		if (pausedSince === null) {
+			pausedSince = Date.now();
+			console.log("Market is paused, halting stock simulation");
+		}
+		return;
+	}
+
+	if (pausedSince !== null) {
+		shiftActiveImpacts(Date.now() - pausedSince);
+		console.log(
+			`Market resumed after ${((Date.now() - pausedSince) / 1000).toFixed(0)}s, restarting stock simulation`,
+		);
+		pausedSince = null;
+	}
+
 	const stocks = await sql`SELECT id, symbol, volatility FROM stocks`;
-	
+
 	for (const stock of stocks) {
 		const stockId = stock.id;
 		const symbol = stock.symbol;
-		const volatility = stock.volatility;
+		// NUMERIC comes back from the driver as a string.
+		const volatility = Number(stock.volatility);
 
 		if (!liveStockState.has(stockId)) {
 			await initializeLiveStockState(stockId);
@@ -190,8 +281,8 @@ export const stockSimulator = async (io: Server) => {
 			continue;
 		}
 
-		// Calculate current drift based on active news effects
-		let currentDrift = DRIFT;
+		// Calculate current drift from the market sentiment and active news effects
+		let currentDrift = driftForSentiment(market.sentiment, volatility);
 		const now = Date.now();
 
 		let idImpacts = activeImpacts.get(stockId) || [];
@@ -269,6 +360,12 @@ export const stockSimulator = async (io: Server) => {
 
 		// If we've reached the number of ticks to aggregate, prepare to save to DB
 		if (isCandleComplete) {
+			// Keep the finished candle in memory whether or not it is persisted.
+			stockState.recentCandles.push({ ...stockState.currentCandle });
+			if (stockState.recentCandles.length > MAX_RECENT_CANDLES) {
+				stockState.recentCandles.shift();
+			}
+
 			if (config.ENABLE_STOCK_DB_UPDATES) {
 				stockState.pendingDbCandles.push({ ...stockState.currentCandle });
 
@@ -285,4 +382,3 @@ export const stockSimulator = async (io: Server) => {
 		}
 	}
 };
-

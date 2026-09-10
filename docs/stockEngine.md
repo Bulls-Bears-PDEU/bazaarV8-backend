@@ -27,3 +27,13 @@ let, $S_{t-1}$ = Rs. 690 (This will act as our starting point), $\mu$ (Drift) = 
 When a `newsReleased` event is triggered, temporary drift modifiers are applied to the Geometric Brownian Motion (GBM) model to simulate the market's reaction to the news. These targeted adjustments are tracked in the `activeImpacts` map, allowing the simulation to momentarily override the base drift ($\mu$) with directional momentum.
 
 Each news event impact runs on a 60-second execution lifecycle. During this brief 60-second window, the modified drift steers the generated stock prices either upwards or downwards, depending on the severity and sentiment of the news. Once the 60 seconds elapse, the impact is removed from the `activeImpacts` map, and the stock's price generation seamlessly returns to its baseline GBM trajectory.
+
+## Market State: Pause and Sentiment
+
+The `market` table holds a single row (`id = 1`) with the global state of the simulation, editable by admins from the admin panel. The engine reads this row on every tick through a cached accessor, so the switch costs no extra database round trips.
+
+**Pause.** While `is_paused` is true the simulator returns immediately: no ticks are generated, no prices are emitted over the socket, and no OHLC rows are written. Candle timestamps are derived from the previous candle rather than from the wall clock, so the simulated clock simply resumes where it left off. Because news impacts expire on wall clock time, the duration of the pause is added back onto every active impact when the market resumes, so a news event cannot silently evaporate while the market is halted.
+
+**Sentiment.** The `sentiment` column (`bullish`, `bearish` or `neutral`) tilts the baseline drift ($\mu$) of every stock. The tilt is expressed as the fraction a stock is nudged by over a minute and converted into a drift the same way a news impact is — `impact / (ticks × Δt)` — because an annualised drift is far too small to be visible over the length of a session: per tick it lands well below the paisa that prices are rounded to. At the current values (±0.001 per minute) a bullish market drifts roughly +6% over an hour and a bearish market roughly −6%, before volatility and news are layered on top. Neutral leaves the baseline drift untouched.
+
+Both changes are broadcast to every connected client as a `marketStateUpdate` socket event, and the current state is also sent to each client as it connects.

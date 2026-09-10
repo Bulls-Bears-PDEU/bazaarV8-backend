@@ -129,6 +129,23 @@ const initDB = async () => {
         ADD COLUMN IF NOT EXISTS is_released BOOLEAN NOT NULL DEFAULT FALSE
         `;
 
+				// Single-row table (id = 1) holding the global market state used by
+				// the stock engine: pause switch and sentiment driving the drift.
+				await sql`
+        CREATE TABLE IF NOT EXISTS market (
+            id INTEGER PRIMARY KEY DEFAULT 1,
+            is_paused BOOLEAN NOT NULL DEFAULT FALSE,
+            sentiment VARCHAR(10) NOT NULL DEFAULT 'neutral' CHECK (sentiment IN ('bullish', 'bearish', 'neutral')),
+            paused_at TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT market_singleton CHECK (id = 1)
+        )`;
+
+				await sql`
+        INSERT INTO market (id) VALUES (1)
+        ON CONFLICT (id) DO NOTHING
+        `;
+
 				// Indexes for faster search and retrieval
 				await sql`
     CREATE INDEX IF NOT EXISTS stock_name_fts_idx

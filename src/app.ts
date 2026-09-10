@@ -3,6 +3,7 @@ import express, { type Request, type Response } from "express";
 import sql from "./database/database.js";
 import newsRouter from "./routes/news.js";
 import ipoRouter from "./routes/ipo.js";
+import marketRouter from "./routes/market.js";
 import stockRouter from "./routes/stock.js";
 import userRouter from "./routes/user.js";
 import cors from "cors";
@@ -14,6 +15,9 @@ import { Server } from "socket.io";
 import { stockSimulator } from "./stockEngine.js";
 import leaderboardRouter from "./routes/leaderboard.js";
 import { broadcastLeaderboard } from "./controller/leaderboard.js";
+import { getMarketState } from "./controller/market.js";
+import type { MarketState } from "./models/market.js";
+import eventEmitter from "./eventEmitter.js";
 
 const app: express.Application = express();
 
@@ -40,6 +44,7 @@ app.use("/news", newsRouter);
 app.use("/ipos", ipoRouter);
 app.use("/users", userRouter);
 app.use("/leaderboard", leaderboardRouter);
+app.use("/market", marketRouter);
 
 app.post("/test-email", async (req, res) => {
 	const { to, subject, text } = req.body;
@@ -62,9 +67,23 @@ const io = new Server(httpServer, {
 
 io.on("connection", (socket) => {
 	console.log("A client connected:", socket.id);
+
+	// Send the current market state straight away so a client that connects
+	// while the market is paused renders the right state without polling.
+	getMarketState()
+		.then((state) => socket.emit("marketStateUpdate", state))
+		.catch((err) => {
+			console.error("Error sending market state to client:", err);
+		});
+
 	socket.on("disconnect", () => {
 		console.log("A client disconnected:", socket.id);
 	});
+});
+
+// Broadcast market pause/sentiment changes made by admins to every client.
+eventEmitter.on("marketStateChanged", (state: MarketState) => {
+	io.emit("marketStateUpdate", state);
 });
 
 // Run the stock simulator every 1 seconds.
