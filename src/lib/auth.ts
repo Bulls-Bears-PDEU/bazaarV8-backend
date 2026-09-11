@@ -1,15 +1,31 @@
 import { dash } from "@better-auth/infra";
 import { betterAuth } from "better-auth";
 import { admin, emailOTP } from "better-auth/plugins";
-import { Pool } from "pg";
 import { sendEmail, sendPasswordResetEmail } from "./email.js";
 import config from "../config/config.js";
+import { pool } from "../database/pool.js";
+
+/**
+ * The reset link has to open the app the request came from, otherwise a player
+ * resetting their password lands on the admin panel's reset page. Only known
+ * origins are trusted; anything else falls back to the player app.
+ */
+const resetLinkBaseUrl = (request?: Request) => {
+  const origin = request?.headers.get("origin");
+  if (origin && config.FRONTEND_ORIGINS.includes(origin)) {
+    return origin;
+  }
+  return config.PLAYER_APP_URL;
+};
 
 export const auth = betterAuth({
-  database: new Pool({
-    connectionString: config.DATABASE_URL,
-  }),
-  baseURL: "http://localhost:5173/",
+  // Shares the trading pool, which also registers the NUMERIC type parser so
+  // cash_balance comes back as a number rather than a string.
+  database: pool,
+  baseURL: config.BACKEND_URL,
+  // Better Auth rejects mutating requests from an untrusted Origin, so both the
+  // admin panel and the player app must be listed.
+  trustedOrigins: config.FRONTEND_ORIGINS,
   emailAndPassword: {
     enabled: true,
     requireEmailVerification: true,
@@ -20,8 +36,7 @@ export const auth = betterAuth({
         username: user.name,
         verificationLink: url,
         token,
-        baseUrl: "http://localhost:5173", // TODO: Update this to match your frontend URL
-        // You can also include additional information in the email, such as the user's IP address or the time of the request, to help them identify if the request was legitimate.
+        baseUrl: resetLinkBaseUrl(request),
       });
     },
     onPasswordReset: async ({ user }, request) => {

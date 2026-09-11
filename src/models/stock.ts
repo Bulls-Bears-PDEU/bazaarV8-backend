@@ -5,7 +5,12 @@ export type Stock = {
 	sector: string;
 	volatility: number;
 	created_at: string;
-	isLocked: boolean;
+	// Trading halted for this stock. Matches the SQL column name; the API has
+	// always returned `locked`, never `isLocked`.
+	locked: boolean;
+	// Latest simulated price, written every tick. Null only before the first.
+	last_price: number | null;
+	last_price_at: string | null;
 	name_tsv: string;
 };
 

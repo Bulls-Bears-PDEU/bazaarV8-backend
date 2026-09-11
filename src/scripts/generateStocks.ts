@@ -1,4 +1,5 @@
 import sql from "../database/database.js";
+import { initDB } from "../database/schema.js";
 import type { StockOHLC } from "../models/stock.js";
 import { generateStockPrice } from "../stockEngine.js";
 
@@ -18,6 +19,9 @@ const sectors = [
 const generateStocks = async () => {
 	const count = Number(process.argv.slice(2)[0]) || 100;
 	const ohlcCount = Number(process.argv.slice(2)[1]) || 30; // Number of OHLC entries to generate for each stock, default is 30
+
+	// The schema is no longer created as a side effect of importing the database.
+	await initDB();
 
 	console.log(
 		`Generating ${count} stocks with ${ohlcCount} OHLC entries each...`,
@@ -63,8 +67,18 @@ const generateStocks = async () => {
 			);
 		}
 
+		await sql`
+			UPDATE stocks
+			SET last_price = ${ohlc.close_price}, last_price_at = CURRENT_TIMESTAMP
+			WHERE id = ${i}
+		`;
+
 		console.log(`Generated stock ${symbol} with ${ohlcCount} OHLC entries.`);
 	}
+
+	// Stocks are inserted with explicit ids, which does not advance the serial
+	// sequence; without this the next addStock collides on the primary key.
+	await sql`SELECT setval('stocks_id_seq', (SELECT MAX(id) FROM stocks))`;
 
 	console.log("Stocks generated successfully.");
 };

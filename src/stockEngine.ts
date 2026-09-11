@@ -2,13 +2,13 @@
  * This file contains the logic for the stock generation engine, which makes realtime stock prices on the fly using a GBM model. The GBM model is a stochastic process that is commonly used to model stock prices. More info on the working of the model can be found in the stockEngine.md file in the docs folder.
  */
 
-import type { Server } from "socket.io";
 import config from "./config/config.js";
 import { getMarketState } from "./controller/market.js";
 import sql from "./database/database.js";
 import eventEmitter from "./eventEmitter.js";
 import type { MarketSentiment } from "./models/market.js";
 import type { StockOHLC } from "./models/stock.js";
+import { emitToAdmins, emitToMarket } from "./realtime/emitter.js";
 
 const TIME_STEP = 1 / 907200; // Delta T
 const DRIFT = 0.15; // Baseline drift, used when the market sentiment is neutral
@@ -52,7 +52,6 @@ type Candle = Omit<StockOHLC, "id">;
 type LiveStockState = {
 	currentCandle: Candle;
 	ticksInCurrentCandle: number;
-	pendingDbCandles: Candle[];
 	// Completed candles kept in memory regardless of ENABLE_STOCK_DB_UPDATES, so
 	// the market overview reflects the running simulation even when nothing is
 	// being persisted.
@@ -181,7 +180,8 @@ export const generateStockPrice = (
 	};
 };
 
-const initializeLiveStockState = async (stockId: number) => {
+/** Returns false when the stock has no candle to start from yet. */
+const initializeLiveStockState = async (stockId: number): Promise<boolean> => {
 	const result = await sql`
         SELECT open_price, high_price, low_price, close_price, timestamp
         FROM stock_ohlc
@@ -191,24 +191,92 @@ const initializeLiveStockState = async (stockId: number) => {
     `;
 
 	if (result.length === 0) {
-		throw new Error(`No OHLC data found for stock ID ${stockId}`);
+		return false;
 	}
 
 	const latestCandle = result[0];
 
+	// NUMERIC comes back from the driver as a string; the engine does arithmetic
+	// on these and emits them, so they must be numbers from the first tick.
 	liveStockState.set(stockId, {
 		currentCandle: {
 			stock_id: stockId,
-			open_price: latestCandle.open_price,
-			high_price: latestCandle.high_price,
-			low_price: latestCandle.low_price,
-			close_price: latestCandle.close_price,
+			open_price: Number(latestCandle.open_price),
+			high_price: Number(latestCandle.high_price),
+			low_price: Number(latestCandle.low_price),
+			close_price: Number(latestCandle.close_price),
 			timestamp: latestCandle.timestamp,
 		},
 		ticksInCurrentCandle: 0,
-		pendingDbCandles: [],
 		recentCandles: [],
 	});
+	return true;
+};
+
+type SimulatedStock = { id: number; symbol: string; volatility: number };
+
+/**
+ * The stock list barely ever changes but was re-queried every second. Cache it,
+ * drop the cache whenever a stock is added, edited or listed ("stocksChanged"),
+ * and refresh it on a timer anyway to pick up changes made outside this
+ * process, such as the seed script.
+ */
+const STOCK_LIST_TTL_MS = 60_000;
+let stockListCache: { stocks: SimulatedStock[]; loadedAt: number } | null =
+	null;
+
+eventEmitter.on("stocksChanged", () => {
+	stockListCache = null;
+});
+
+const getSimulatedStocks = async (): Promise<SimulatedStock[]> => {
+	if (
+		stockListCache &&
+		Date.now() - stockListCache.loadedAt < STOCK_LIST_TTL_MS
+	) {
+		return stockListCache.stocks;
+	}
+	const rows = await sql`SELECT id, symbol, volatility FROM stocks`;
+	const stocks = rows.map((row) => ({
+		id: Number(row.id),
+		symbol: String(row.symbol),
+		// NUMERIC comes back from the driver as a string.
+		volatility: Number(row.volatility),
+	}));
+	stockListCache = { stocks, loadedAt: Date.now() };
+	return stocks;
+};
+
+/**
+ * One statement per tick for every stock, instead of one per stock. This is
+ * what order fills and valuations read, since stock_ohlc may not be written.
+ */
+const persistLastPrices = async (candles: Candle[]) => {
+	if (candles.length === 0) return;
+	const ids = candles.map((candle) => candle.stock_id);
+	const prices = candles.map((candle) => candle.close_price);
+	await sql`
+		UPDATE stocks s
+		SET last_price = t.price, last_price_at = CURRENT_TIMESTAMP
+		FROM UNNEST(${ids}::int[], ${prices}::numeric[]) AS t(id, price)
+		WHERE s.id = t.id
+	`;
+};
+
+/** Every completed candle this tick in one multi-row insert. */
+const persistCandles = async (candles: Candle[]) => {
+	if (candles.length === 0) return;
+	await sql`
+		INSERT INTO stock_ohlc (stock_id, open_price, high_price, low_price, close_price, timestamp)
+		SELECT * FROM UNNEST(
+			${candles.map((c) => c.stock_id)}::int[],
+			${candles.map((c) => c.open_price)}::numeric[],
+			${candles.map((c) => c.high_price)}::numeric[],
+			${candles.map((c) => c.low_price)}::numeric[],
+			${candles.map((c) => c.close_price)}::numeric[],
+			${candles.map((c) => c.timestamp)}::timestamp[]
+		)
+	`;
 };
 
 /**
@@ -238,7 +306,30 @@ const shiftActiveImpacts = (offsetMs: number) => {
 	}
 };
 
-export const stockSimulator = async (io: Server) => {
+// Candles whose insert failed, retried with the next batch. Capped so a long
+// database outage cannot grow this without bound.
+const MAX_UNSAVED_CANDLES = 5_000;
+let unsavedCandles: Candle[] = [];
+
+// Stocks with no candle to start from are skipped until they get one; warn once.
+const warnedUnseededStocks = new Set<number>();
+
+// setInterval does not wait for the previous tick. If a tick is slow (a slow
+// database write), skip the next one rather than running two over the same
+// in-memory state.
+let isTicking = false;
+
+export const stockSimulator = async () => {
+	if (isTicking) return;
+	isTicking = true;
+	try {
+		await runTick();
+	} finally {
+		isTicking = false;
+	}
+};
+
+const runTick = async () => {
 	const market = await getMarketState();
 
 	// While the market is paused the simulation stands completely still: no new
@@ -261,23 +352,32 @@ export const stockSimulator = async (io: Server) => {
 		pausedSince = null;
 	}
 
-	const stocks = await sql`SELECT id, symbol, volatility FROM stocks`;
+	const stocks = await getSimulatedStocks();
+
+	// Every stock's candle after this tick, sent as one message, and the
+	// candles that completed this tick, persisted as one insert.
+	const tickCandles: Candle[] = [];
+	const completedCandles: Candle[] = [];
 
 	for (const stock of stocks) {
-		const stockId = stock.id;
-		const symbol = stock.symbol;
-		// NUMERIC comes back from the driver as a string.
-		const volatility = Number(stock.volatility);
+		const { id: stockId, symbol, volatility } = stock;
 
 		if (!liveStockState.has(stockId)) {
-			await initializeLiveStockState(stockId);
+			const initialized = await initializeLiveStockState(stockId);
+			if (!initialized) {
+				if (!warnedUnseededStocks.has(stockId)) {
+					warnedUnseededStocks.add(stockId);
+					console.warn(
+						`Stock ${stockId} (${symbol}) has no OHLC data yet; skipping it until it does`,
+					);
+				}
+				continue;
+			}
+			warnedUnseededStocks.delete(stockId);
 		}
 
 		const stockState = liveStockState.get(stockId);
 		if (!stockState) {
-			console.error(
-				`Failed to initialize live stock state for stock ID ${stockId}`,
-			);
 			continue;
 		}
 
@@ -352,33 +452,39 @@ export const stockSimulator = async (io: Server) => {
 			stockState.currentCandle.timestamp = newDate.toISOString(); // Update timestamp by incrementing it by the total time covered by the ticks in the candle
 		}
 
-		// Emit the new price to clients
-		io.emit("stockPriceUpdate", { ...stockState.currentCandle });
-		console.log(
-			`Emitted new price for stock ID ${stockState.currentCandle.stock_id}: Open: ${stockState.currentCandle.open_price}, High: ${stockState.currentCandle.high_price}, Low: ${stockState.currentCandle.low_price}, Close: ${stockState.currentCandle.close_price} at ${stockState.currentCandle.timestamp}, ticks in current candle: ${stockState.ticksInCurrentCandle}`,
-		);
+		const candle = { ...stockState.currentCandle };
+		tickCandles.push(candle);
 
-		// If we've reached the number of ticks to aggregate, prepare to save to DB
+		// Admin panel compatibility: it still listens for one message per stock.
+		// Players only get the batched marketTick below.
+		emitToAdmins("stockPriceUpdate", candle);
+
 		if (isCandleComplete) {
 			// Keep the finished candle in memory whether or not it is persisted.
-			stockState.recentCandles.push({ ...stockState.currentCandle });
+			stockState.recentCandles.push(candle);
 			if (stockState.recentCandles.length > MAX_RECENT_CANDLES) {
 				stockState.recentCandles.shift();
 			}
+			completedCandles.push(candle);
+		}
+	}
 
-			if (config.ENABLE_STOCK_DB_UPDATES) {
-				stockState.pendingDbCandles.push({ ...stockState.currentCandle });
+	// One message per second for the whole market, instead of one per stock.
+	emitToMarket("marketTick", tickCandles);
 
-				// Save pending candles to DB
-				for (const candle of stockState.pendingDbCandles) {
-					await sql`
-                        INSERT INTO stock_ohlc (stock_id, open_price, high_price, low_price, close_price, timestamp)
-                        VALUES (${candle.stock_id}, ${candle.open_price}, ${candle.high_price}, ${candle.low_price}, ${candle.close_price}, ${candle.timestamp})
-                    `;
-				}
-				stockState.pendingDbCandles = [];
-			}
-			stockState.ticksInCurrentCandle = 0; // Reset tick count for the next candle
+	await persistLastPrices(tickCandles);
+
+	if (config.ENABLE_STOCK_DB_UPDATES && completedCandles.length > 0) {
+		const batch = [...unsavedCandles, ...completedCandles];
+		try {
+			await persistCandles(batch);
+			unsavedCandles = [];
+		} catch (error) {
+			unsavedCandles = batch.slice(-MAX_UNSAVED_CANDLES);
+			console.error(
+				`Failed to save ${batch.length} candles, will retry next candle:`,
+				error,
+			);
 		}
 	}
 };

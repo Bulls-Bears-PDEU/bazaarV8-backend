@@ -1,6 +1,6 @@
 import type { Request, Response } from "express";
 import sql from "../database/database.js";
-import type { Server } from "socket.io";
+import { emitToMarket } from "../realtime/emitter.js";
 
 export const getLeaderboardData = async () => {
 	const leaderboardData = await sql`
@@ -18,10 +18,12 @@ export const getLeaderboardData = async () => {
 	return leaderboardData;
 };
 
-export const broadcastLeaderboard = async (io: Server) => {
+// Approved players and admins only: this carries every leader's name and net
+// worth, so it must not reach pending or unauthenticated sockets.
+export const broadcastLeaderboard = async () => {
 	try {
 		const data = await getLeaderboardData();
-		io.emit("leaderboard_update", data);
+		emitToMarket("leaderboard_update", data);
 	} catch (error) {
 		console.error("Error broadcasting leaderboard:", error);
 	}

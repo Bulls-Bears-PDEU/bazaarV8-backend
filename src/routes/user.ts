@@ -1,18 +1,11 @@
 import { Router } from "express";
-import { approveUser, createNewUser } from "../controller/user.js";
+import { approveUser } from "../controller/user.js";
 import requireAdmin from "../middleware/requireAdmin.js";
 
+// Users are created by Better Auth's sign-up flow. The old POST /users/create
+// was an unauthenticated Clerk-webhook leftover that could not work anyway:
+// Better Auth's users table requires email, name and timestamps.
 const userRouter = Router();
-
-userRouter.post("/create", async (req, res) => {
-	// Placeholder for user creation logic
-	try {
-		await createNewUser(req.body.id);
-		res.json({ message: "User created successfully" });
-	} catch (error) {
-		res.status(500).json({ error });
-	}
-});
 
 userRouter.put("/approve/:id", requireAdmin, async (req, res) => {
 	const userId = Array.isArray(req.params.id)

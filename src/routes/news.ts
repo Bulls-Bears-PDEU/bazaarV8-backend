@@ -12,6 +12,7 @@ import {
 import requireAdmin from "../middleware/requireAdmin.js";
 import requireApprovedUser from "../middleware/requireApprovedUser.js";
 import eventEmitter from "../eventEmitter.js";
+import { getSessionUser } from "../lib/session.js";
 
 const newsRouter = Router();
 
@@ -40,7 +41,8 @@ newsRouter.get("/getAllNewsAdmin", requireAdmin, async (_, res) => {
 newsRouter.get("/getNewsById/:id", async (req, res) => {
 	const { id } = req.params;
 	try {
-		const newsItem = await getNewsById(Number(id));
+		const isAdmin = getSessionUser(res).role === "admin";
+		const newsItem = await getNewsById(Number(id), isAdmin);
 		if (!newsItem) {
 			return res.status(404).json({ error: "News not found" });
 		}

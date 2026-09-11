@@ -137,7 +137,8 @@ stockRouter.post("/addStockOHLC/:id", requireAdmin, async (req, res) => {
 });
 
 stockRouter.get("/searchStocks", async (req, res) => {
-	const { query } = req.query;
+	// `query` is the documented name; `q` is what the admin client has sent.
+	const query = req.query.query ?? req.query.q ?? "";
 	try {
 		const stocks = await searchStocks(String(query));
 		res.json(stocks);
@@ -157,9 +158,16 @@ stockRouter.get("/getAllSectors", async (_, res) => {
 	}
 });
 
-stockRouter.get("/getCurrentPricesForAllStocks", async (req, res) => {
+// Accepts ?stockIds=1&stockIds=2 or ?stockIds=1,2.
+stockRouter.get("/getCurrentPricesForStocks", async (req, res) => {
+	const raw = req.query.stockIds;
+	const values = Array.isArray(raw) ? raw : raw === undefined ? [] : [raw];
+	const stockIds = values
+		.flatMap((value) => String(value).split(","))
+		.map(Number)
+		.filter((id) => Number.isInteger(id) && id > 0);
+
 	try {
-		const stockIds = (req.query.stockIds as string).split(",").map(Number);
 		const prices = await getCurrentPriceForStocks(stockIds);
 		res.json(prices);
 	} catch (error) {

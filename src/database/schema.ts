@@ -1,0 +1,239 @@
+import sql from "./database.js";
+
+/**
+ * Creates and migrates every table the app owns. Better Auth owns `users`,
+ * `session`, `account` and `verification`, so those must already exist (run
+ * the Better Auth migration first on a fresh database).
+ *
+ * Awaited by server.ts before the HTTP server listens and before the stock
+ * engine starts, so nothing can query a table that is not there yet.
+ * Every statement is idempotent: this runs on every boot.
+ */
+export const initDB = async () => {
+	await sql`
+    CREATE TABLE IF NOT EXISTS stocks (
+        id SERIAL PRIMARY KEY,
+        symbol VARCHAR(10) NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        volatility NUMERIC(5, 2) NOT NULL,
+        sector VARCHAR(100) NOT NULL,
+        locked BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`;
+	// Add tsvector column for full-text search
+	await sql`
+    ALTER TABLE stocks
+    ADD COLUMN IF NOT EXISTS name_tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', name)) STORED
+    `;
+	await sql`
+    CREATE TABLE IF NOT EXISTS user_stock_transactions (
+        id SERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        stock_id INTEGER NOT NULL REFERENCES stocks(id) ON DELETE CASCADE,
+        volume INTEGER NOT NULL DEFAULT 0,
+        price NUMERIC(15, 2) NOT NULL DEFAULT 0,
+        transaction_type VARCHAR(10) NOT NULL CHECK (transaction_type IN ('buy', 'sell', 'short', 'cover')),
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`;
+	await sql`
+    CREATE TABLE IF NOT EXISTS user_portfolios (
+        id SERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        stock_id INTEGER NOT NULL REFERENCES stocks(id) ON DELETE CASCADE,
+        volume INTEGER NOT NULL DEFAULT 0,
+        average_price NUMERIC(15, 2) NOT NULL DEFAULT 0,
+        UNIQUE (user_id, stock_id)
+    )`;
+	await sql`
+    CREATE TABLE IF NOT EXISTS stock_ohlc (
+        id SERIAL PRIMARY KEY,
+        stock_id INTEGER NOT NULL REFERENCES stocks(id) ON DELETE CASCADE,
+        open_price NUMERIC(15, 2) NOT NULL DEFAULT 0,
+        high_price NUMERIC(15, 2) NOT NULL DEFAULT 0,
+        low_price NUMERIC(15, 2) NOT NULL DEFAULT 0,
+        close_price NUMERIC(15, 2) NOT NULL DEFAULT 0,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`;
+
+	await sql`
+    CREATE TABLE IF NOT EXISTS news (
+        id SERIAL PRIMARY KEY,
+        title VARCHAR(621) NOT NULL,
+        content TEXT NOT NULL,
+        is_released BOOLEAN NOT NULL DEFAULT FALSE,
+        release_at TIMESTAMP NOT NULL,
+        affected_stocks JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`;
+
+	await sql`
+    CREATE TABLE IF NOT EXISTS ipo (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        symbol VARCHAR(20) NOT NULL,
+        close_date TIMESTAMP NOT NULL,
+        open_date TIMESTAMP NOT NULL,
+        allotment_date TIMESTAMP NOT NULL,
+        subscription_rate NUMERIC(10, 2) NOT NULL DEFAULT 0,
+        sector VARCHAR(100) NOT NULL,
+        is_open_to_subscription BOOLEAN NOT NULL DEFAULT FALSE,
+        lot_size INTEGER NOT NULL,
+        max_price NUMERIC(15, 2) NOT NULL,
+        min_price NUMERIC(15, 2) NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'dormant' CHECK (status IN ('dormant', 'upcoming', 'open', 'closed', 'listed', 'withdrawn')),
+        shares_offered BIGINT NOT NULL,
+        listing_price NUMERIC(15, 2) NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`;
+
+	await sql`ALTER TABLE ipo DROP COLUMN IF EXISTS issue_type`;
+	await sql`ALTER TABLE ipo ALTER COLUMN close_date TYPE TIMESTAMP`;
+	await sql`ALTER TABLE ipo ALTER COLUMN open_date TYPE TIMESTAMP`;
+	await sql`ALTER TABLE ipo ALTER COLUMN allotment_date TYPE TIMESTAMP`;
+	await sql`ALTER TABLE ipo ALTER COLUMN status SET DEFAULT 'dormant'`;
+	await sql`ALTER TABLE ipo DROP CONSTRAINT IF EXISTS ipo_status_check`;
+	await sql`
+    ALTER TABLE ipo
+    ADD CONSTRAINT ipo_status_check CHECK (status IN ('dormant', 'upcoming', 'open', 'closed', 'listed', 'withdrawn'))
+    `;
+
+	await sql`
+    ALTER TABLE news
+    ADD COLUMN IF NOT EXISTS is_released BOOLEAN NOT NULL DEFAULT FALSE
+    `;
+
+	// Single-row table (id = 1) holding the global market state used by
+	// the stock engine: pause switch and sentiment driving the drift.
+	await sql`
+    CREATE TABLE IF NOT EXISTS market (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        is_paused BOOLEAN NOT NULL DEFAULT FALSE,
+        sentiment VARCHAR(10) NOT NULL DEFAULT 'neutral' CHECK (sentiment IN ('bullish', 'bearish', 'neutral')),
+        paused_at TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT market_singleton CHECK (id = 1)
+    )`;
+
+	await sql`
+    INSERT INTO market (id) VALUES (1)
+    ON CONFLICT (id) DO NOTHING
+    `;
+
+	await migrateMoneyColumns();
+	await migrateLivePrice();
+
+	// Indexes for faster search and retrieval
+	await sql`
+    CREATE INDEX IF NOT EXISTS stock_name_fts_idx
+        ON STOCKS
+        USING GIN (name_tsv)
+    `;
+	await sql`
+    CREATE INDEX IF NOT EXISTS user_stock_transactions_user_id_idx ON user_stock_transactions (user_id)
+    `;
+	await sql`
+    CREATE INDEX IF NOT EXISTS user_stock_transactions_stock_id_idx ON user_stock_transactions (stock_id)
+    `;
+	await sql`
+    CREATE INDEX IF NOT EXISTS user_portfolios_user_id_idx ON user_portfolios (user_id)
+    `;
+	await sql`
+    CREATE INDEX IF NOT EXISTS user_portfolios_stock_id_idx ON user_portfolios (stock_id)
+    `;
+	await sql`
+    CREATE INDEX IF NOT EXISTS stock_ohlc_stock_id_idx ON stock_ohlc (stock_id)
+    `;
+	await sql`
+    CREATE INDEX IF NOT EXISTS stock_ohlc_stock_id_timestamp_idx ON stock_ohlc (stock_id, timestamp DESC)
+    `;
+	await sql`
+    CREATE INDEX IF NOT EXISTS news_release_at_idx ON news (release_at DESC)
+    `;
+	await sql`
+    CREATE INDEX IF NOT EXISTS news_affected_stocks_idx ON news USING GIN (affected_stocks)
+    `;
+	await sql`
+    CREATE INDEX IF NOT EXISTS ipo_open_date_idx ON ipo (open_date DESC)
+    `;
+	await sql`
+    CREATE INDEX IF NOT EXISTS ipo_status_idx ON ipo (status)
+    `;
+	await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS ipo_symbol_idx ON ipo (symbol)
+    `;
+	// addStock and IPO listing both resolve a stock by symbol, so duplicates
+	// would silently pick an arbitrary row.
+	await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS stocks_symbol_idx ON stocks (symbol)
+    `;
+};
+
+/**
+ * Better Auth maps an additionalFields entry of type "number" to INTEGER, so
+ * cash_balance and frozen_balance were created as whole rupees. Every trade
+ * would round to the rupee and the frozen-balance reconciliation could never
+ * balance. Widen them to the NUMERIC(15,2) the original schema intended.
+ *
+ * Guarded on the current type so the table is only rewritten once. Note that
+ * Better Auth's CLI migration only adds missing columns; it will not narrow
+ * these back.
+ */
+const migrateMoneyColumns = async () => {
+	await sql`
+    DO $$
+    BEGIN
+        IF (SELECT data_type FROM information_schema.columns
+            WHERE table_schema = current_schema() AND table_name = 'users'
+              AND column_name = 'cash_balance') <> 'numeric' THEN
+            ALTER TABLE users
+            ALTER COLUMN cash_balance TYPE NUMERIC(15, 2) USING cash_balance::numeric;
+        END IF;
+        IF (SELECT data_type FROM information_schema.columns
+            WHERE table_schema = current_schema() AND table_name = 'users'
+              AND column_name = 'frozen_balance') <> 'numeric' THEN
+            ALTER TABLE users
+            ALTER COLUMN frozen_balance TYPE NUMERIC(15, 2) USING COALESCE(frozen_balance, 0)::numeric;
+        END IF;
+    END $$
+    `;
+	await sql`ALTER TABLE users ALTER COLUMN cash_balance SET DEFAULT 500000`;
+	await sql`ALTER TABLE users ALTER COLUMN frozen_balance SET DEFAULT 0`;
+
+	// NOT VALID: enforced for every new write, but a pre-existing bad row can
+	// never stop the server from booting.
+	await sql`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_cash_balance_nonneg`;
+	await sql`
+    ALTER TABLE users
+    ADD CONSTRAINT users_cash_balance_nonneg CHECK (cash_balance >= 0) NOT VALID
+    `;
+	await sql`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_frozen_balance_nonneg`;
+	await sql`
+    ALTER TABLE users
+    ADD CONSTRAINT users_frozen_balance_nonneg CHECK (frozen_balance >= 0) NOT VALID
+    `;
+};
+
+/**
+ * The latest simulated price, written by the stock engine every tick.
+ *
+ * stock_ohlc is only written when ENABLE_STOCK_DB_UPDATES is on, so with it off
+ * the table stays frozen at seed prices. Anything that needs "the price now"
+ * (order fills, valuations, the leaderboard) reads this column instead.
+ */
+const migrateLivePrice = async () => {
+	await sql`ALTER TABLE stocks ADD COLUMN IF NOT EXISTS last_price NUMERIC(15, 2)`;
+	await sql`ALTER TABLE stocks ADD COLUMN IF NOT EXISTS last_price_at TIMESTAMP`;
+
+	// Seed it from the newest candle so it is never empty before the first tick.
+	await sql`
+    UPDATE stocks s
+    SET last_price = latest.close_price, last_price_at = CURRENT_TIMESTAMP
+    FROM (
+        SELECT DISTINCT ON (stock_id) stock_id, close_price
+        FROM stock_ohlc
+        ORDER BY stock_id, timestamp DESC
+    ) latest
+    WHERE s.id = latest.stock_id AND s.last_price IS NULL
+    `;
+};

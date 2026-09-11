@@ -1,4 +1,5 @@
 import sql from "../database/database.js";
+import eventEmitter from "../eventEmitter.js";
 import type { Ipo, IpoStatus } from "../models/ipo.js";
 
 type GetAllIpoFilters = {
@@ -228,13 +229,15 @@ const addStockFromListing = async (ipo: Ipo, volatility: number) => {
 
 	// Create new stock from IPO listing
 	const newStock = await sql`
-		INSERT INTO stocks (name, symbol, sector, volatility, locked)
+		INSERT INTO stocks (name, symbol, sector, volatility, locked, last_price, last_price_at)
 		VALUES (
 			${ipo.name},
 			${ipo.symbol},
 			${ipo.sector},
 			${volatility},
-			FALSE
+			FALSE,
+			${ipo.listing_price},
+			CURRENT_TIMESTAMP
 		)
 		RETURNING id
 	`;
@@ -260,6 +263,8 @@ const addStockFromListing = async (ipo: Ipo, volatility: number) => {
 	`;
 
 	console.log(`Stock created from IPO listing: ${ipo.symbol} with initial price ${ipo.listing_price}`);
+	// Start simulating the new stock on the next tick rather than within a minute.
+	eventEmitter.emit("stocksChanged");
 };
 
 export const deleteIpo = async (id: number) => {

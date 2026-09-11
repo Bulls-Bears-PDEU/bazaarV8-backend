@@ -1,29 +1,30 @@
-// import config from "./config/config.js";
-import express, { type Request, type Response } from "express";
+import express from "express";
+import cors from "cors";
+import { toNodeHandler } from "better-auth/node";
+import { createServer } from "node:http";
+import { Server } from "socket.io";
+import config from "./config/config.js";
 import sql from "./database/database.js";
 import newsRouter from "./routes/news.js";
 import ipoRouter from "./routes/ipo.js";
 import marketRouter from "./routes/market.js";
 import stockRouter from "./routes/stock.js";
 import userRouter from "./routes/user.js";
-import cors from "cors";
-import { toNodeHandler } from "better-auth/node";
-import { auth } from "./lib/auth.js";
-import { sendEmail } from "./lib/email.js";
-import { createServer } from "node:http";
-import { Server } from "socket.io";
-import { stockSimulator } from "./stockEngine.js";
 import leaderboardRouter from "./routes/leaderboard.js";
+import { auth } from "./lib/auth.js";
+import { stockSimulator } from "./stockEngine.js";
 import { broadcastLeaderboard } from "./controller/leaderboard.js";
 import { getMarketState } from "./controller/market.js";
 import type { MarketState } from "./models/market.js";
 import eventEmitter from "./eventEmitter.js";
+import socketAuth, { type SocketData } from "./middleware/socketAuth.js";
+import { emitMarketState, registerIo, ROOMS } from "./realtime/emitter.js";
 
 const app: express.Application = express();
 
 app.use(
 	cors({
-		origin: "http://localhost:5173", // Update this to match your frontend URL
+		origin: config.FRONTEND_ORIGINS,
 		credentials: true,
 		methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
 	}),
@@ -46,27 +47,32 @@ app.use("/users", userRouter);
 app.use("/leaderboard", leaderboardRouter);
 app.use("/market", marketRouter);
 
-app.post("/test-email", async (req, res) => {
-	const { to, subject, text } = req.body;
-	try {
-		await sendEmail({ to, subject, otp: text });
-		res.status(200).json({ message: "Email sent successfully" });
-	} catch (error) {
-		console.error("Error sending email:", error);
-		res.status(500).json({ error: "Failed to send email" });
-	}
-});
-
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
 	cors: {
-		origin: "*", // Update this to match frontend URL
+		// Must list origins explicitly: browsers refuse "*" together with
+		// credentials, and without credentials the session cookie never arrives.
+		origin: config.FRONTEND_ORIGINS,
 		methods: ["GET", "POST"],
+		credentials: true,
 	},
 });
 
+registerIo(io);
+io.use(socketAuth);
+
 io.on("connection", (socket) => {
-	console.log("A client connected:", socket.id);
+	const { userId, role } = socket.data as SocketData;
+
+	socket.join(ROOMS.user(userId));
+	if (role === "pending") {
+		socket.join(ROOMS.lobby);
+	} else {
+		socket.join(ROOMS.market);
+		if (role === "admin") {
+			socket.join(ROOMS.admins);
+		}
+	}
 
 	// Send the current market state straight away so a client that connects
 	// while the market is paused renders the right state without polling.
@@ -75,29 +81,29 @@ io.on("connection", (socket) => {
 		.catch((err) => {
 			console.error("Error sending market state to client:", err);
 		});
-
-	socket.on("disconnect", () => {
-		console.log("A client disconnected:", socket.id);
-	});
 });
 
-// Broadcast market pause/sentiment changes made by admins to every client.
+// Broadcast market pause/sentiment changes made by admins.
 eventEmitter.on("marketStateChanged", (state: MarketState) => {
-	io.emit("marketStateUpdate", state);
+	emitMarketState(state);
 });
 
-// Run the stock simulator every 1 seconds.
-setInterval(() => {
-	stockSimulator(io).catch((err) => {
-		console.error("Error in stock simulator:", err);
-	});
-}, 1000);
+/**
+ * Started by server.ts once the schema is in place, so the engine can never
+ * query a table that initDB has not created yet.
+ */
+export const startBackgroundJobs = () => {
+	setInterval(() => {
+		stockSimulator().catch((err) => {
+			console.error("Error in stock simulator:", err);
+		});
+	}, 1000);
 
-// Broadcast the leaderboard every 2 seconds via WebSockets.
-setInterval(() => {
-	broadcastLeaderboard(io).catch((err) => {
-		console.error("Error broadcasting leaderboard:", err);
-	});
-}, 2000);
+	setInterval(() => {
+		broadcastLeaderboard().catch((err) => {
+			console.error("Error broadcasting leaderboard:", err);
+		});
+	}, 2000);
+};
 
-export default httpServer;		
+export default httpServer;

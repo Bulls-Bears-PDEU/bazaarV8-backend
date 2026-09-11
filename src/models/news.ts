@@ -5,5 +5,6 @@ export type News = {
 		isReleased: boolean;
 		release_at: string;
 		created_at: string;
-		affected_stocks: Record<string, number>[]; // stock symbol to impact percentage mapping
+		// Stock id or symbol -> fractional price impact, applied over 60s on release.
+		affected_stocks: Record<string, number>;
 	};

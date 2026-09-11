@@ -34,7 +34,11 @@ export const getAllNewsAdmin = async () => {
 	return result as News[];
 };
 
-export const getNewsById = async (id: number) => {
+/**
+ * Unreleased news moves prices when it drops, so only admins may read it before
+ * release. Without the filter any player could fetch it by guessing an id.
+ */
+export const getNewsById = async (id: number, includeUnreleased = false) => {
 	const result = await sql`
 		SELECT
 			id,
@@ -46,6 +50,7 @@ export const getNewsById = async (id: number) => {
 			affected_stocks
 		FROM news
 		WHERE id = ${id}
+			AND (${includeUnreleased} OR is_released = TRUE)
 	`;
 	return result[0] as News | undefined;
 };
