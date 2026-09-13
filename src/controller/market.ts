@@ -1,6 +1,10 @@
 import sql from "../database/database.js";
 import eventEmitter from "../eventEmitter.js";
-import type { MarketSentiment, MarketState } from "../models/market.js";
+import type {
+	MarketSentiment,
+	MarketState,
+	TradingRules,
+} from "../models/market.js";
 
 /**
  * The stock engine reads the market state on every tick (once per second), so
@@ -16,6 +20,10 @@ const normalizeState = (row: Record<string, unknown>): MarketState => ({
 		? new Date(row.paused_at as string).toISOString()
 		: null,
 	updated_at: new Date(row.updated_at as string).toISOString(),
+	short_margin_pct: Number(row.short_margin_pct),
+	allow_short_selling: Boolean(row.allow_short_selling),
+	allow_limit_orders: Boolean(row.allow_limit_orders),
+	max_order_quantity: Number(row.max_order_quantity),
 });
 
 const fetchMarketState = async (): Promise<MarketState> => {
@@ -65,6 +73,30 @@ export const setMarketPaused = async (
 	const state = normalizeState(result[0]);
 	publishStateChange(state);
 	console.log(`Market ${isPaused ? "paused" : "resumed"} by admin`);
+	return state;
+};
+
+/**
+ * Changes only apply to new orders. Open shorts keep the margin they locked,
+ * so raising the rate never pulls extra cash out of existing positions.
+ */
+export const setTradingRules = async (
+	rules: Partial<TradingRules>,
+): Promise<MarketState> => {
+	const result = await sql`
+		UPDATE market
+		SET
+			short_margin_pct = COALESCE(${rules.short_margin_pct ?? null}, short_margin_pct),
+			allow_short_selling = COALESCE(${rules.allow_short_selling ?? null}, allow_short_selling),
+			allow_limit_orders = COALESCE(${rules.allow_limit_orders ?? null}, allow_limit_orders),
+			max_order_quantity = COALESCE(${rules.max_order_quantity ?? null}, max_order_quantity),
+			updated_at = CURRENT_TIMESTAMP
+		WHERE id = 1
+		RETURNING *
+	`;
+
+	const state = normalizeState(result[0]);
+	publishStateChange(state);
 	return state;
 };
 

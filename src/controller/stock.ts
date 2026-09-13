@@ -74,12 +74,14 @@ export const updateStock = async (
 		stockData.name !== undefined ||
 		stockData.volatility !== undefined ||
 		stockData.sector !== undefined ||
+		stockData.logo_url !== undefined ||
 		locked !== undefined;
 
 	if (!hasUpdates) {
 		return;
 	}
 
+	// logo_url: an empty string or null clears it; leaving it out keeps it.
 	await sql`
 		UPDATE stocks
 		SET
@@ -87,6 +89,7 @@ export const updateStock = async (
 			name = COALESCE(${stockData.name ?? null}, name),
 			volatility = COALESCE(${stockData.volatility ?? null}, volatility),
 			sector = COALESCE(${stockData.sector ?? null}, sector),
+			logo_url = CASE WHEN ${stockData.logo_url !== undefined} THEN ${stockData.logo_url || null} ELSE logo_url END,
 			locked = COALESCE(${locked ?? null}, locked)
 		WHERE id = ${id}
 	`;

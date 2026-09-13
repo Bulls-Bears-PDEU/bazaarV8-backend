@@ -23,8 +23,6 @@ export const auth = betterAuth({
   // cash_balance comes back as a number rather than a string.
   database: pool,
   baseURL: config.BACKEND_URL,
-  // Better Auth rejects mutating requests from an untrusted Origin, so both the
-  // admin panel and the player app must be listed.
   trustedOrigins: config.FRONTEND_ORIGINS,
   emailAndPassword: {
     enabled: true,

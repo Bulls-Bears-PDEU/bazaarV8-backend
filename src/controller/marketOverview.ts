@@ -1,5 +1,6 @@
 import sql from "../database/database.js";
 import type {
+	IndexBasis,
 	IndexHistory,
 	MarketOverview,
 	SectorSnapshot,
@@ -8,8 +9,8 @@ import type {
 import { getLiveMarketData } from "../stockEngine.js";
 import { getMarketState } from "./market.js";
 
-// A candle covers 10 ticks (~10s), so the default window looks back over
-// roughly 15 minutes of simulated market time.
+// A candle covers 10 seconds, so the default window looks back over the last
+// 15 minutes of trading.
 const DEFAULT_OVERVIEW_CANDLES = 90;
 const MAX_OVERVIEW_CANDLES = 1000;
 const TOP_MOVERS = 5;
@@ -83,7 +84,8 @@ const fetchCandleSeries = async (limit: number) => {
 		const points = series.get(stockId) ?? [];
 		const seen = new Set(points.map((point) => point.timestamp));
 
-		for (const candle of [...live.recent, live.current]) {
+		const candles = live.current ? [...live.recent, live.current] : live.recent;
+		for (const candle of candles) {
 			const timestamp = new Date(candle.timestamp).toISOString();
 			if (seen.has(timestamp)) continue;
 			seen.add(timestamp);
@@ -113,6 +115,8 @@ const fetchCandleSeries = async (limit: number) => {
  */
 const aggregateIndex = (
 	series: Map<number, SeriesPoint[]>,
+	// Starting prices by stock id; without them each stock's window open.
+	bases?: Map<number, number>,
 ): IndexHistory["points"] => {
 	const lengths = [...series.values()].map((points) => points.length);
 	const longest = lengths.length ? Math.max(...lengths) : 0;
@@ -125,11 +129,11 @@ const aggregateIndex = (
 		let contributors = 0;
 		let timestamp: string | null = null;
 
-		for (const points of series.values()) {
+		for (const [stockId, points] of series) {
 			const position = points.length - 1 - offset;
 			if (position < 0) continue;
 
-			const base = points[0].open;
+			const base = bases ? bases.get(stockId) : points[0].open;
 			if (!base) continue;
 
 			total += points[position].close / base;
@@ -216,8 +220,8 @@ const summarizeSectors = (stocks: StockSnapshot[]): SectorSnapshot[] => {
  * participants are holding.
  *
  * Movement is measured over a window of the most recent candles rather than a
- * wall clock interval, because OHLC timestamps are simulated and drift away
- * from real time whenever the engine is paused or the stocks are reseeded.
+ * wall clock interval, so time the market spent paused or closed (when no
+ * candles are made) does not count towards it.
  */
 export const getMarketOverview = async (
 	candles = DEFAULT_OVERVIEW_CANDLES,
@@ -259,21 +263,25 @@ export const getMarketOverview = async (
 				COALESCE(SUM(frozen_balance), 0)::float8 AS total_frozen
 			FROM users
 		`,
-		// Holdings are valued at the latest price rather than the average price
-		// they were bought at, so the number tracks the live market.
+		// Valued at stocks.last_price, the engine's live price. stock_ohlc is
+		// frozen at seed prices when ENABLE_STOCK_DB_UPDATES is off. Shorts have
+		// a negative volume, so longs and shorts are summed separately rather
+		// than netted against each other.
 		sql`
 			SELECT
 				COUNT(DISTINCT p.user_id)::int AS investors,
-				COALESCE(SUM(p.volume), 0)::float8 AS shares_held,
-				COALESCE(SUM(p.volume * latest.close_price), 0)::float8 AS holdings_value
+				COALESCE(SUM(p.volume) FILTER (WHERE p.volume > 0), 0)::float8 AS shares_held,
+				COALESCE(SUM(-p.volume) FILTER (WHERE p.volume < 0), 0)::float8 AS shares_short,
+				COALESCE(SUM(p.volume * COALESCE(s.last_price, p.average_price))
+					FILTER (WHERE p.volume > 0), 0)::float8 AS holdings_value,
+				COALESCE(SUM(-p.volume * COALESCE(s.last_price, p.average_price))
+					FILTER (WHERE p.volume < 0), 0)::float8 AS short_exposure,
+				COALESCE(SUM((p.average_price - COALESCE(s.last_price, p.average_price)) * -p.volume)
+					FILTER (WHERE p.volume < 0), 0)::float8 AS short_pnl,
+				COALESCE(SUM(p.margin_locked), 0)::float8 AS margin_locked
 			FROM user_portfolios p
-			LEFT JOIN LATERAL (
-				SELECT close_price
-				FROM stock_ohlc o
-				WHERE o.stock_id = p.stock_id
-				ORDER BY o.timestamp DESC
-				LIMIT 1
-			) latest ON TRUE
+			JOIN stocks s ON s.id = p.stock_id
+			WHERE p.volume <> 0
 		`,
 		sql`
 			SELECT
@@ -368,7 +376,16 @@ export const getMarketOverview = async (
 			total_frozen: num(participants.total_frozen),
 			holdings_value: holdingsValue,
 			shares_held: num(holdings.shares_held),
-			net_worth: totalCash + holdingsValue,
+			shares_short: num(holdings.shares_short),
+			short_exposure: num(holdings.short_exposure),
+			margin_locked: num(holdings.margin_locked),
+			// Same formula as the leaderboard: frozen holds margin and reserved
+			// cash, and a short contributes only its P&L.
+			net_worth:
+				totalCash +
+				num(participants.total_frozen) +
+				holdingsValue +
+				num(holdings.short_pnl),
 		},
 		news: {
 			released: num(news.released),
@@ -393,12 +410,25 @@ export const getMarketOverview = async (
  */
 export const getIndexHistory = async (
 	points = DEFAULT_OVERVIEW_CANDLES,
+	basis: IndexBasis = "window",
 ): Promise<IndexHistory> => {
 	const limit = clampWindow(points);
-	const series = await fetchCandleSeries(limit);
+	const [series, startRows] = await Promise.all([
+		fetchCandleSeries(limit),
+		basis === "start"
+			? sql`SELECT id, starting_price::float8 AS starting_price FROM stocks WHERE starting_price > 0`
+			: Promise.resolve([]),
+	]);
+	const bases =
+		basis === "start"
+			? new Map(
+					startRows.map((row) => [Number(row.id), Number(row.starting_price)]),
+				)
+			: undefined;
 
 	return {
-		points: aggregateIndex(series),
+		points: aggregateIndex(series, bases),
+		basis,
 		window_candles: limit,
 		stock_count: series.size,
 	};

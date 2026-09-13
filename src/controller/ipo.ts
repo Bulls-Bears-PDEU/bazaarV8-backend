@@ -1,6 +1,17 @@
 import sql from "../database/database.js";
-import eventEmitter from "../eventEmitter.js";
 import type { Ipo, IpoStatus } from "../models/ipo.js";
+import { TradingError } from "../trading/errors.js";
+import { listIpo, refundAllApplications } from "./ipoApplications.js";
+
+// Live subscription: shares applied for over shares offered. Falls back to the
+// admin-entered value for IPOs nobody has applied to.
+const SUBSCRIPTION_RATE = sql`
+	COALESCE(
+		(SELECT SUM(a.lots * a.lot_size) FROM ipo_applications a
+		 WHERE a.ipo_id = ipo.id AND a.status <> 'withdrawn')::float8 / NULLIF(ipo.shares_offered, 0),
+		ipo.subscription_rate::float8
+	) AS subscription_rate
+`;
 
 type GetAllIpoFilters = {
 	status?: IpoStatus;
@@ -25,7 +36,7 @@ export const getAllIpos = async (filters?: GetAllIpoFilters) => {
 			close_date,
 			open_date,
 			allotment_date,
-			subscription_rate,
+			${SUBSCRIPTION_RATE},
 			sector,
 			is_open_to_subscription,
 			lot_size,
@@ -34,6 +45,9 @@ export const getAllIpos = async (filters?: GetAllIpoFilters) => {
 			status,
 			shares_offered,
 			listing_price,
+			allotment_price,
+			allotment_completed_at,
+			listed_stock_id,
 			created_at,
 			updated_at
 		FROM ipo
@@ -58,7 +72,7 @@ export const getIpoById = async (id: number, includeDormant = false) => {
 			close_date,
 			open_date,
 			allotment_date,
-			subscription_rate,
+			${SUBSCRIPTION_RATE},
 			sector,
 			is_open_to_subscription,
 			lot_size,
@@ -67,6 +81,9 @@ export const getIpoById = async (id: number, includeDormant = false) => {
 			status,
 			shares_offered,
 			listing_price,
+			allotment_price,
+			allotment_completed_at,
+			listed_stock_id,
 			created_at,
 			updated_at
 		FROM ipo
@@ -104,7 +121,7 @@ export const addIpo = async (
 			close_date,
 			open_date,
 			allotment_date,
-			subscription_rate,
+			${SUBSCRIPTION_RATE},
 			sector,
 			is_open_to_subscription,
 			lot_size,
@@ -171,31 +188,43 @@ export const updateIpo = async (
 			lot_size = COALESCE(${ipoData.lot_size ?? null}, lot_size),
 			max_price = COALESCE(${ipoData.max_price ?? null}, max_price),
 			min_price = COALESCE(${ipoData.min_price ?? null}, min_price),
-			status = COALESCE(${ipoData.status ?? null}, status),
 			shares_offered = COALESCE(${ipoData.shares_offered ?? null}, shares_offered),
 			listing_price = COALESCE(${ipoData.listing_price ?? null}, listing_price),
 			updated_at = CURRENT_TIMESTAMP
 		WHERE id = ${id}
 	`;
+
+	// Status changes move money (listing credits shares, withdrawal refunds),
+	// so they always go through updateIpoStatus, never a plain column update.
+	if (ipoData.status !== undefined) {
+		await updateIpoStatus(id, ipoData.status);
+	}
 };
 
+/**
+ * Moving to "listed" creates the stock and credits every allotment as shares
+ * (bazaar_list_ipo), and is refused until allotment has run. Moving to
+ * "withdrawn" refunds every live application. Other statuses are plain updates.
+ */
 export const updateIpoStatus = async (
 	id: number,
 	status: Ipo["status"],
 	isOpenToSubscription?: boolean,
 	volatility?: number,
 ) => {
-	// First get the IPO data to check current status
-	const ipoResult = await sql`
-		SELECT * FROM ipo WHERE id = ${id}
-	`;
-	const ipo = ipoResult[0] as Ipo | undefined;
-
-	if (!ipo) {
-		throw new Error("IPO not found");
+	const ipoResult = await sql`SELECT status FROM ipo WHERE id = ${id}`;
+	const current = ipoResult[0] as Pick<Ipo, "status"> | undefined;
+	if (!current) {
+		throw new TradingError("IPO_NOT_FOUND", "IPO not found.");
 	}
 
-	// Update IPO status
+	if (status === "listed") {
+		if (current.status !== "listed") {
+			await listIpo(id, volatility);
+		}
+		return;
+	}
+
 	await sql`
 		UPDATE ipo
 		SET
@@ -205,68 +234,13 @@ export const updateIpoStatus = async (
 		WHERE id = ${id}
 	`;
 
-	// If status is changing to "listed", create a stock record
-	if (status === "listed" && ipo.status !== "listed") {
-		await addStockFromListing(ipo, volatility ?? 0);
+	if (status === "withdrawn") {
+		await refundAllApplications(id);
 	}
 };
 
-/**
- * Helper function to create a stock record when an IPO is listed
- * Checks for duplicate symbols and creates stock entry
- */
-const addStockFromListing = async (ipo: Ipo, volatility: number) => {
-	// Check if stock already exists with this symbol
-	const existingStock = await sql`
-		SELECT id FROM stocks WHERE symbol = ${ipo.symbol}
-	`;
-
-	if (existingStock.length > 0) {
-		// Stock already exists, skip creation
-		console.log(`Stock with symbol ${ipo.symbol} already exists`);
-		return;
-	}
-
-	// Create new stock from IPO listing
-	const newStock = await sql`
-		INSERT INTO stocks (name, symbol, sector, volatility, locked, last_price, last_price_at)
-		VALUES (
-			${ipo.name},
-			${ipo.symbol},
-			${ipo.sector},
-			${volatility},
-			FALSE,
-			${ipo.listing_price},
-			CURRENT_TIMESTAMP
-		)
-		RETURNING id
-	`;
-
-	const stockId = newStock[0].id;
-
-	// Insert initial price into stock_ohlc using IPO's listing price
-	await sql`
-		INSERT INTO stock_ohlc (
-			stock_id, 
-			open_price, 
-			high_price, 
-			low_price, 
-			close_price
-		)
-		VALUES (
-			${stockId},
-			${ipo.listing_price},
-			${ipo.listing_price},
-			${ipo.listing_price},
-			${ipo.listing_price}
-		)
-	`;
-
-	console.log(`Stock created from IPO listing: ${ipo.symbol} with initial price ${ipo.listing_price}`);
-	// Start simulating the new stock on the next tick rather than within a minute.
-	eventEmitter.emit("stocksChanged");
-};
-
+/** Refunds applications first: deleting cascades to them and their held cash. */
 export const deleteIpo = async (id: number) => {
+	await refundAllApplications(id);
 	await sql`DELETE FROM ipo WHERE id = ${id}`;
 };

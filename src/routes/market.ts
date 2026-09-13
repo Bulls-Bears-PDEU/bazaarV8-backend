@@ -4,6 +4,7 @@ import {
 	getMarketState,
 	setMarketPaused,
 	setMarketSentiment,
+	setTradingRules,
 } from "../controller/market.js";
 import {
 	getIndexHistory,
@@ -11,7 +12,11 @@ import {
 } from "../controller/marketOverview.js";
 import requireAdmin from "../middleware/requireAdmin.js";
 import requireApprovedUser from "../middleware/requireApprovedUser.js";
-import { MARKET_SENTIMENTS, type MarketSentiment } from "../models/market.js";
+import {
+	MARKET_SENTIMENTS,
+	type MarketSentiment,
+	type TradingRules,
+} from "../models/market.js";
 
 const marketRouter = Router();
 
@@ -42,11 +47,14 @@ marketRouter.get("/getMarketOverview", async (req, res) => {
 });
 
 marketRouter.get("/getIndexHistory", async (req, res) => {
-	const { points } = req.query;
+	const { points, basis } = req.query;
 
 	try {
+		// basis=start measures from starting prices (players); the default
+		// measures from the window open (the admin overview).
 		const history = await getIndexHistory(
 			points === undefined ? undefined : Number(points),
+			basis === "start" ? "start" : "window",
 		);
 		res.json(history);
 	} catch (error) {
@@ -69,6 +77,47 @@ marketRouter.patch("/setPauseState", requireAdmin, async (req, res) => {
 		res.json(state);
 	} catch (error) {
 		console.error("Error updating market pause state:", error);
+		res.status(500).json({ error: "Internal Server Error" });
+	}
+});
+
+// Body: any subset of { short_margin_pct, allow_short_selling,
+// allow_limit_orders, max_order_quantity }.
+marketRouter.patch("/setTradingRules", requireAdmin, async (req, res) => {
+	const body = (req.body ?? {}) as Record<string, unknown>;
+	const rules: Partial<TradingRules> = {};
+
+	if (body.short_margin_pct !== undefined) {
+		const pct = Number(body.short_margin_pct);
+		if (!Number.isFinite(pct) || pct <= 0 || pct > 100) {
+			return res
+				.status(400)
+				.json({ error: "short_margin_pct must be above 0 and at most 100" });
+		}
+		rules.short_margin_pct = pct;
+	}
+	for (const key of ["allow_short_selling", "allow_limit_orders"] as const) {
+		if (body[key] !== undefined) {
+			if (typeof body[key] !== "boolean") {
+				return res.status(400).json({ error: `${key} must be a boolean` });
+			}
+			rules[key] = body[key];
+		}
+	}
+	if (body.max_order_quantity !== undefined) {
+		const max = Number(body.max_order_quantity);
+		if (!Number.isInteger(max) || max <= 0) {
+			return res
+				.status(400)
+				.json({ error: "max_order_quantity must be a whole number above 0" });
+		}
+		rules.max_order_quantity = max;
+	}
+
+	try {
+		res.json(await setTradingRules(rules));
+	} catch (error) {
+		console.error("Error updating trading rules:", error);
 		res.status(500).json({ error: "Internal Server Error" });
 	}
 });

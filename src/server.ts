@@ -6,7 +6,7 @@ const start = async () => {
 	await initDB();
 	console.info("Database schema is up to date.");
 
-	startBackgroundJobs();
+	await startBackgroundJobs();
 
 	httpServer.listen(config.PORT, () => {
 		console.log(`Server is running on port ${config.PORT}`);

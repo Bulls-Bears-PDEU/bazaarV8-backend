@@ -11,6 +11,10 @@ export type Stock = {
 	// Latest simulated price, written every tick. Null only before the first.
 	last_price: number | null;
 	last_price_at: string | null;
+	// The price it started trading at; every player-facing change is from here.
+	starting_price: number | null;
+	// Company logo. Null until an admin sets one.
+	logo_url: string | null;
 	name_tsv: string;
 };
 

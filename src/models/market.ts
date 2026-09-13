@@ -17,6 +17,15 @@ export type MarketState = {
 	sentiment: MarketSentiment;
 	paused_at: string | null;
 	updated_at: string;
+} & TradingRules;
+
+/** Admin-set rules, stored on the same row so they are cached with it. */
+export type TradingRules = {
+	// Share of a short's notional locked from cash while it is open.
+	short_margin_pct: number;
+	allow_short_selling: boolean;
+	allow_limit_orders: boolean;
+	max_order_quantity: number;
 };
 
 export type StockSnapshot = {
@@ -45,8 +54,8 @@ export type SectorSnapshot = {
 /**
  * Everything an admin needs to read the state of the whole market at a glance.
  * Every price movement is measured over a window of the most recent candles
- * rather than a wall clock interval, because OHLC timestamps are simulated and
- * drift away from real time whenever the engine is paused or reseeded.
+ * rather than a wall clock interval, so time the market spent paused or closed
+ * does not count towards it.
  */
 export type MarketOverview = {
 	state: MarketState;
@@ -84,7 +93,11 @@ export type MarketOverview = {
 		total_cash: number;
 		total_frozen: number;
 		holdings_value: number;
+		// Long shares only; shorts are counted separately below.
 		shares_held: number;
+		shares_short: number;
+		short_exposure: number;
+		margin_locked: number;
 		net_worth: number;
 	};
 	news: {
@@ -100,8 +113,15 @@ export type MarketOverview = {
 	};
 };
 
+/**
+ * What each stock is normalised against: the open of its oldest candle in the
+ * window, or the price it started trading at.
+ */
+export type IndexBasis = "window" | "start";
+
 export type IndexHistory = {
 	points: { timestamp: string; value: number }[];
+	basis: IndexBasis;
 	window_candles: number;
 	stock_count: number;
 };

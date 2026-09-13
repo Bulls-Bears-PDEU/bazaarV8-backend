@@ -22,6 +22,11 @@ export type Ipo = {
 	status: IpoStatus;
 	shares_offered: number;
 	listing_price: number;
+	// Set when allotment runs; the price every allottee pays.
+	allotment_price: number | null;
+	allotment_completed_at: string | null;
+	// The stock created when the IPO lists.
+	listed_stock_id: number | null;
 	created_at: string;
 	updated_at?: string;
 };

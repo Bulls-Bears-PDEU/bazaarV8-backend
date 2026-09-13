@@ -13,6 +13,7 @@ import requireAdmin from "../middleware/requireAdmin.js";
 import requireApprovedUser from "../middleware/requireApprovedUser.js";
 import eventEmitter from "../eventEmitter.js";
 import { getSessionUser } from "../lib/session.js";
+import { emitToMarket } from "../realtime/emitter.js";
 
 const newsRouter = Router();
 
@@ -100,6 +101,8 @@ newsRouter.patch("/updateReleaseStatus/:id", requireAdmin, async (req, res) => {
 		if (isReleased) {
 			// Emit an event when news is released
 			eventEmitter.emit("newsReleased", { id: Number(id) });
+			// Players refetch the feed and see the headline straight away.
+			emitToMarket("newsReleased", { id: Number(id) });
 		}
 		res.json({ message: "News release status updated successfully" });
 	} catch (error) {

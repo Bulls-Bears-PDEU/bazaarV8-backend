@@ -8,9 +8,19 @@ import {
 	updateIpo,
 	updateIpoStatus,
 } from "../controller/ipo.js";
+import {
+	applyForIpo,
+	getIpoApplicationsAdmin,
+	getMyApplications,
+	runIpoAllotment,
+	withdrawIpoApplication,
+} from "../controller/ipoApplications.js";
 import type { IpoStatus } from "../models/ipo.js";
+import { getSessionUser } from "../lib/session.js";
 import requireAdmin from "../middleware/requireAdmin.js";
 import requireApprovedUser from "../middleware/requireApprovedUser.js";
+import requireMarketOpen from "../middleware/requireMarketOpen.js";
+import { sendTradingError, TradingError } from "../trading/errors.js";
 
 const ipoRouter = Router();
 
@@ -180,8 +190,7 @@ ipoRouter.put("/updateIpo/:id", requireAdmin, async (req, res) => {
 		await updateIpo(Number(id), payload);
 		res.json({ message: "IPO updated successfully" });
 	} catch (error) {
-		console.error("Error updating IPO:", error);
-		res.status(500).json({ error: "Internal Server Error" });
+		sendTradingError(res, error);
 	}
 });
 
@@ -227,8 +236,8 @@ ipoRouter.patch("/updateIpoStatus/:id", requireAdmin, async (req, res) => {
 		);
 		res.json({ message: "IPO status updated successfully" });
 	} catch (error) {
-		console.error("Error updating IPO status:", error);
-		res.status(500).json({ error: "Internal Server Error" });
+		// e.g. ALLOTMENT_PENDING when listing before allotment has run.
+		sendTradingError(res, error);
 	}
 });
 
@@ -238,8 +247,89 @@ ipoRouter.delete("/deleteIpo/:id", requireAdmin, async (req, res) => {
 		await deleteIpo(Number(id));
 		res.json({ message: "IPO deleted successfully" });
 	} catch (error) {
-		console.error("Error deleting IPO:", error);
-		res.status(500).json({ error: "Internal Server Error" });
+		sendTradingError(res, error);
+	}
+});
+
+const ipoIdParam = (value: unknown) => {
+	const id = Number(value);
+	if (!Number.isInteger(id) || id <= 0) {
+		throw new TradingError("IPO_NOT_FOUND", "IPO not found.");
+	}
+	return id;
+};
+
+// Body: { lots, bid_price? }. bid_price defaults to the top of the band.
+ipoRouter.post("/applyForIpo/:id", requireMarketOpen, async (req, res) => {
+	try {
+		const lots = Number(req.body?.lots);
+		if (!Number.isInteger(lots) || lots <= 0) {
+			throw new TradingError(
+				"INVALID_QUANTITY",
+				"lots must be a whole number above zero.",
+			);
+		}
+		const bid =
+			req.body?.bid_price === undefined ? undefined : Number(req.body.bid_price);
+		if (bid !== undefined && (!Number.isFinite(bid) || bid <= 0)) {
+			throw new TradingError("INVALID_INPUT", "bid_price must be a price.");
+		}
+		const result = await applyForIpo(
+			getSessionUser(res).id,
+			ipoIdParam(req.params.id),
+			lots,
+			bid,
+		);
+		res.status(201).json(result);
+	} catch (error) {
+		sendTradingError(res, error);
+	}
+});
+
+// Refunds the whole application. Only while the IPO is open.
+ipoRouter.delete("/withdrawApplication/:id", async (req, res) => {
+	try {
+		res.json(
+			await withdrawIpoApplication(
+				getSessionUser(res).id,
+				ipoIdParam(req.params.id),
+			),
+		);
+	} catch (error) {
+		sendTradingError(res, error);
+	}
+});
+
+ipoRouter.get("/getMyApplications", async (_req, res) => {
+	try {
+		res.json(await getMyApplications(getSessionUser(res).id));
+	} catch (error) {
+		sendTradingError(res, error);
+	}
+});
+
+ipoRouter.get("/getIpoApplicationsAdmin/:id", requireAdmin, async (req, res) => {
+	try {
+		res.json(await getIpoApplicationsAdmin(ipoIdParam(req.params.id)));
+	} catch (error) {
+		sendTradingError(res, error);
+	}
+});
+
+// Body: { allotment_price? }, defaulting to the top of the band. The IPO must
+// be closed; runs once.
+ipoRouter.post("/runAllotment/:id", requireAdmin, async (req, res) => {
+	try {
+		const price =
+			req.body?.allotment_price === undefined
+				? undefined
+				: Number(req.body.allotment_price);
+		if (price !== undefined && (!Number.isFinite(price) || price <= 0)) {
+			throw new TradingError("INVALID_INPUT", "allotment_price must be a price.");
+		}
+		res.json(await runIpoAllotment(ipoIdParam(req.params.id), price));
+	} catch (error) {
+		sendTradingError(res, error);
 	}
 });
 
