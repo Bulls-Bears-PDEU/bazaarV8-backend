@@ -16,6 +16,9 @@ export type Stock = {
 	// Company logo. Null until an admin sets one.
 	logo_url: string | null;
 	name_tsv: string;
+	// The move since starting_price at last_price, added by the API.
+	change?: number | null;
+	change_pct?: number | null;
 };
 
 export type StockOHLC = {

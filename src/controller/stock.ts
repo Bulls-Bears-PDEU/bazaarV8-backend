@@ -1,5 +1,6 @@
 import sql from "../database/database.js";
 import eventEmitter from "../eventEmitter.js";
+import { sinceStart } from "../marketIndex.js";
 import type { Stock, StockOHLC } from "../models/stock.js";
 
 // Tells the stock engine to reload its cached stock list.
@@ -7,9 +8,22 @@ const notifyStocksChanged = () => {
 	eventEmitter.emit("stocksChanged");
 };
 
+/** Adds the move since the starting price, measured where players see it measured. */
+const withSinceStart = (row: Record<string, unknown>) => {
+	const move = sinceStart(
+		row.last_price == null ? null : Number(row.last_price),
+		row.starting_price == null ? null : Number(row.starting_price),
+	);
+	return {
+		...row,
+		change: move?.change ?? null,
+		change_pct: move?.change_pct ?? null,
+	} as Stock;
+};
+
 export const getAllStocks = async () => {
 	const result = await sql`SELECT * FROM stocks`;
-	return result as Stock[];
+	return result.map(withSinceStart);
 };
 
 /**
@@ -42,13 +56,23 @@ export const getCurrentPricesForAllStocks = async () => {
 
 export const getStockById = async (id: number) => {
 	const result = await sql`SELECT * FROM stocks WHERE id = ${id}`;
-	return result[0] as Stock;
+	return (result[0] ? withSinceStart(result[0]) : undefined) as Stock;
 };
 
+/** Every candle, each with its close measured from the stock's starting price. */
 export const getOHLCByStockId = async (stockId: number) => {
-	const result =
-		await sql`SELECT * FROM stock_ohlc WHERE stock_id = ${stockId} ORDER BY timestamp ASC`;
-	return result as StockOHLC[];
+	const result = await sql`
+		SELECT o.*, s.starting_price::float8 AS stock_starting_price
+		FROM stock_ohlc o JOIN stocks s ON s.id = o.stock_id
+		WHERE o.stock_id = ${stockId}
+		ORDER BY o.timestamp ASC
+	`;
+	return result.map(({ stock_starting_price, ...candle }) => ({
+		...candle,
+		change_pct:
+			sinceStart(Number(candle.close_price), stock_starting_price as number | null)
+				?.change_pct ?? null,
+	})) as unknown as (StockOHLC & { change_pct: number | null })[];
 };
 
 export const getCurrentPrice = async (stockId: number) => {
@@ -137,7 +161,7 @@ export const searchStocks = async (query: string) => {
 		ORDER BY (symbol ILIKE ${`${trimmed}%`}) DESC, symbol
 		LIMIT 50
 	`;
-	return result as Stock[];
+	return result.map(withSinceStart);
 };
 
 export const getAllSectors = async () => {

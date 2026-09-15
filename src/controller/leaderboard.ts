@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import sql from "../database/database.js";
 import { getSessionUser } from "../lib/session.js";
 import { emitToMarket } from "../realtime/emitter.js";
+import { STARTING_CAPITAL } from "./portfolio.js";
 
 /**
  * Net worth, marked to the live price, for every player (role 'user'; admins
@@ -41,6 +42,8 @@ export const getLeaderboardData = async () => {
 	const rows = await sql`
 		${NET_WORTH_CTE}
 		SELECT id, name, image, rank, net_worth,
+			-- Profit or loss against the cash every player starts with.
+			(net_worth - ${STARTING_CAPITAL})::float8 AS pnl,
 			-- The admin panel reads this name; it has always meant net worth.
 			net_worth AS total_profit
 		FROM ranked

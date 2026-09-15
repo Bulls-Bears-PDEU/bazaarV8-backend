@@ -7,6 +7,7 @@ import {
 	setTradingRules,
 } from "../controller/market.js";
 import {
+	getCurrentIndex,
 	getIndexHistory,
 	getMarketOverview,
 } from "../controller/marketOverview.js";
@@ -42,6 +43,16 @@ marketRouter.get("/getMarketOverview", async (req, res) => {
 		res.json(overview);
 	} catch (error) {
 		console.error("Error fetching market overview:", error);
+		res.status(500).json({ error: "Internal Server Error" });
+	}
+});
+
+// The Bazaar index now. Live updates follow over the socket as "indexTick".
+marketRouter.get("/getIndex", async (_, res) => {
+	try {
+		res.json(await getCurrentIndex());
+	} catch (error) {
+		console.error("Error fetching the index:", error);
 		res.status(500).json({ error: "Internal Server Error" });
 	}
 });

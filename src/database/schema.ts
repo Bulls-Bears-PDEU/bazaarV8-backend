@@ -268,6 +268,14 @@ const migrateTrading = async () => {
         CONSTRAINT orders_fill_within_quantity CHECK (filled_quantity <= quantity)
     )`;
 	await sql`CREATE INDEX IF NOT EXISTS orders_user_created_idx ON orders (user_id, created_at DESC)`;
+	// What the player asked for: buy (open or add to a long), sell (close a long),
+	// short (open or add to a short) or cover (close a short). side is derived
+	// from it for the matcher. Orders placed before actions existed have none and
+	// keep the old behaviour, where the position decided.
+	await sql`
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS action VARCHAR(5)
+        CHECK (action IN ('buy', 'sell', 'short', 'cover'))
+    `;
 	// The matcher's boot load; partial so it stays tiny whatever the history size.
 	await sql`
     CREATE INDEX IF NOT EXISTS orders_pending_by_stock_idx
@@ -343,6 +351,83 @@ const migrateTrading = async () => {
  * DETAIL; src/trading/errors.ts maps them to HTTP responses.
  */
 const createSettlementFunctions = async () => {
+	// An order's action must fit the position it trades against: no order ever
+	// closes one position and opens the opposite one. Used when an order fills.
+	await sql`
+    CREATE OR REPLACE FUNCTION bazaar_check_action(
+        p_action TEXT, p_quantity INTEGER, p_volume INTEGER, p_allow_short BOOLEAN)
+    RETURNS VOID
+    LANGUAGE plpgsql
+    AS $$
+    BEGIN
+        IF p_action IS NULL THEN
+            RETURN;
+        END IF;
+        IF p_action = 'buy' AND p_volume < 0 THEN
+            RAISE EXCEPTION USING MESSAGE = 'POSITION_CONFLICT',
+                DETAIL = format('You are short %s shares. Cover them before buying.', -p_volume);
+        ELSIF p_action = 'short' AND p_volume > 0 THEN
+            RAISE EXCEPTION USING MESSAGE = 'POSITION_CONFLICT',
+                DETAIL = format('You hold %s shares. Sell them before shorting.', p_volume);
+        ELSIF p_action = 'short' AND NOT p_allow_short THEN
+            RAISE EXCEPTION USING MESSAGE = 'SHORTING_DISABLED', DETAIL = 'Short selling is turned off.';
+        ELSIF p_action = 'sell' AND p_volume <= 0 THEN
+            RAISE EXCEPTION USING MESSAGE = 'NO_POSITION', DETAIL = CASE WHEN p_volume < 0
+                THEN 'You are short this stock. Use Cover to close a short.'
+                ELSE 'You hold no shares of this stock to sell.' END;
+        ELSIF p_action = 'sell' AND p_quantity > p_volume THEN
+            RAISE EXCEPTION USING MESSAGE = 'INVALID_QUANTITY',
+                DETAIL = format('You can sell at most %s shares.', p_volume);
+        ELSIF p_action = 'cover' AND p_volume >= 0 THEN
+            RAISE EXCEPTION USING MESSAGE = 'NO_POSITION', DETAIL = CASE WHEN p_volume > 0
+                THEN 'You hold this stock. Use Sell to close a long.'
+                ELSE 'You have no short in this stock to cover.' END;
+        ELSIF p_action = 'cover' AND p_quantity > -p_volume THEN
+            RAISE EXCEPTION USING MESSAGE = 'INVALID_QUANTITY',
+                DETAIL = format('You can cover at most %s shares.', -p_volume);
+        END IF;
+    END
+    $$
+    `;
+
+	// The same check when an order is placed or modified, where shares already
+	// promised to the player's other open sell or cover orders are not available
+	// again, so two resting orders can never close the same shares.
+	await sql`
+    CREATE OR REPLACE FUNCTION bazaar_validate_action(
+        p_user_id TEXT, p_stock_id INTEGER, p_action TEXT, p_quantity INTEGER, p_exclude_order BIGINT)
+    RETURNS VOID
+    LANGUAGE plpgsql
+    AS $$
+    DECLARE
+        v_vol INTEGER;
+        v_allow_short BOOLEAN;
+        v_committed INTEGER;
+    BEGIN
+        IF p_action IS NULL OR p_action NOT IN ('buy', 'sell', 'short', 'cover') THEN
+            RAISE EXCEPTION USING MESSAGE = 'INVALID_ORDER',
+                DETAIL = 'Choose Buy, Sell, Short or Cover.';
+        END IF;
+        SELECT allow_short_selling INTO v_allow_short FROM market WHERE id = 1;
+        SELECT COALESCE((SELECT volume FROM user_portfolios
+            WHERE user_id = p_user_id AND stock_id = p_stock_id), 0) INTO v_vol;
+        PERFORM bazaar_check_action(p_action, p_quantity, v_vol, v_allow_short);
+
+        IF p_action IN ('sell', 'cover') THEN
+            SELECT COALESCE(SUM(quantity - filled_quantity), 0)::int INTO v_committed
+            FROM orders
+            WHERE user_id = p_user_id AND stock_id = p_stock_id AND status = 'pending'
+                AND action = p_action AND id IS DISTINCT FROM p_exclude_order;
+            IF v_committed > 0 AND p_quantity + v_committed > abs(v_vol) THEN
+                RAISE EXCEPTION USING MESSAGE = 'INVALID_QUANTITY',
+                    DETAIL = format('You can %s at most %s more shares: %s are already in open orders.',
+                        p_action, GREATEST(abs(v_vol) - v_committed, 0), v_committed);
+            END IF;
+        END IF;
+    END
+    $$
+    `;
+
 	await sql`
     CREATE OR REPLACE FUNCTION bazaar_execute_fill(p_order_id BIGINT, p_price NUMERIC)
     RETURNS JSONB
@@ -411,6 +496,9 @@ const createSettlementFunctions = async () => {
         IF NOT FOUND THEN
             v_vol := 0; v_avg := 0; v_margin := 0; v_opened := NULL;
         END IF;
+
+        -- The position may have changed since a resting order was placed.
+        PERFORM bazaar_check_action(o.action, o.quantity, v_vol, m.allow_short_selling);
 
         IF o.side = 'buy' THEN
             -- Covers any short first, then buys the remainder as a long.
@@ -544,6 +632,7 @@ const createSettlementFunctions = async () => {
             'user_id', o.user_id,
             'stock_id', o.stock_id,
             'side', o.side,
+            'action', o.action,
             'order_type', o.order_type,
             'quantity', o.quantity,
             'price', v_price,
@@ -561,9 +650,13 @@ const createSettlementFunctions = async () => {
     $$
     `;
 
+	// The action parameter changed the signature; drop the old one so a call
+	// can never resolve to it.
+	await sql`DROP FUNCTION IF EXISTS bazaar_place_market_order(TEXT, INTEGER, TEXT, INTEGER, NUMERIC)`;
 	await sql`
     CREATE OR REPLACE FUNCTION bazaar_place_market_order(
-        p_user_id TEXT, p_stock_id INTEGER, p_side TEXT, p_quantity INTEGER, p_price NUMERIC)
+        p_user_id TEXT, p_stock_id INTEGER, p_side TEXT, p_quantity INTEGER, p_price NUMERIC,
+        p_action TEXT DEFAULT NULL)
     RETURNS JSONB
     LANGUAGE plpgsql
     AS $$
@@ -577,8 +670,12 @@ const createSettlementFunctions = async () => {
                 DETAIL = format('Orders are limited to %s shares.', v_max);
         END IF;
 
-        INSERT INTO orders (user_id, stock_id, side, order_type, quantity)
-        VALUES (p_user_id, p_stock_id, p_side, 'market', p_quantity)
+        IF p_action IS NOT NULL THEN
+            PERFORM bazaar_validate_action(p_user_id, p_stock_id, p_action, p_quantity, NULL);
+        END IF;
+
+        INSERT INTO orders (user_id, stock_id, side, order_type, quantity, action)
+        VALUES (p_user_id, p_stock_id, p_side, 'market', p_quantity, p_action)
         RETURNING id INTO v_order_id;
 
         RETURN bazaar_execute_fill(v_order_id, p_price);
@@ -651,10 +748,11 @@ const createLimitOrderFunctions = async () => {
 	// Places a limit order. If it is marketable on arrival (a buy at or above
 	// the price, a sell at or below it) it fills straight away at the current
 	// price, which is at least as good as the limit.
+	await sql`DROP FUNCTION IF EXISTS bazaar_place_limit_order(TEXT, INTEGER, TEXT, INTEGER, NUMERIC, NUMERIC)`;
 	await sql`
     CREATE OR REPLACE FUNCTION bazaar_place_limit_order(
         p_user_id TEXT, p_stock_id INTEGER, p_side TEXT, p_quantity INTEGER,
-        p_limit NUMERIC, p_price NUMERIC)
+        p_limit NUMERIC, p_price NUMERIC, p_action TEXT DEFAULT NULL)
     RETURNS JSONB
     LANGUAGE plpgsql
     AS $$
@@ -691,6 +789,10 @@ const createLimitOrderFunctions = async () => {
         SELECT cash_balance, frozen_balance INTO v_cash, v_frozen
         FROM users WHERE id = p_user_id FOR NO KEY UPDATE;
 
+        IF p_action IS NOT NULL THEN
+            PERFORM bazaar_validate_action(p_user_id, p_stock_id, p_action, p_quantity, NULL);
+        END IF;
+
         SELECT * INTO v_res FROM bazaar_limit_reservation(p_user_id, p_stock_id, p_side, p_quantity, v_limit);
         v_total := v_res.reserved_cash + v_res.reserved_margin;
         IF v_total > v_cash THEN
@@ -704,8 +806,8 @@ const createLimitOrderFunctions = async () => {
         v_frozen := v_frozen + v_total;
         UPDATE users SET cash_balance = v_cash, frozen_balance = v_frozen WHERE id = p_user_id;
 
-        INSERT INTO orders (user_id, stock_id, side, order_type, quantity, limit_price, reserved_cash, reserved_margin)
-        VALUES (p_user_id, p_stock_id, p_side, 'limit', p_quantity, v_limit, v_res.reserved_cash, v_res.reserved_margin)
+        INSERT INTO orders (user_id, stock_id, side, order_type, quantity, limit_price, reserved_cash, reserved_margin, action)
+        VALUES (p_user_id, p_stock_id, p_side, 'limit', p_quantity, v_limit, v_res.reserved_cash, v_res.reserved_margin, p_action)
         RETURNING id INTO v_order_id;
 
         IF p_price IS NOT NULL AND (
@@ -721,6 +823,7 @@ const createLimitOrderFunctions = async () => {
             'stock_id', p_stock_id,
             'side', p_side,
             'order_type', 'limit',
+            'action', p_action,
             'quantity', p_quantity,
             'limit_price', v_limit,
             'reserved_cash', v_res.reserved_cash,
@@ -825,6 +928,11 @@ const createLimitOrderFunctions = async () => {
 
         SELECT cash_balance, frozen_balance INTO v_cash, v_frozen
         FROM users WHERE id = o.user_id FOR NO KEY UPDATE;
+
+        IF o.action IS NOT NULL THEN
+            PERFORM bazaar_validate_action(o.user_id, o.stock_id, o.action, v_quantity, o.id);
+        END IF;
+
         -- Release the old reservation, then take the new one.
         v_cash := v_cash + o.reserved_cash + o.reserved_margin;
         v_frozen := v_frozen - o.reserved_cash - o.reserved_margin;

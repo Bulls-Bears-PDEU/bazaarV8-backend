@@ -1,4 +1,5 @@
 import type { Server } from "socket.io";
+import eventEmitter from "../eventEmitter.js";
 
 /**
  * Holds the Socket.IO server so controllers and the engine can emit without
@@ -27,6 +28,9 @@ export const registerIo = (server: Server) => {
 
 export const emitToUser = (userId: string, event: string, payload: unknown) => {
 	io?.to(ROOMS.user(userId)).emit(event, payload);
+	// Anything sent to one player may have changed their account; the live
+	// portfolio reloads it. Its own push is not such an event.
+	if (event !== "portfolioTick") eventEmitter.emit("userEvent", userId);
 };
 
 export const emitToMarket = (event: string, payload: unknown) => {
@@ -41,6 +45,17 @@ export const emitToAdmins = (event: string, payload: unknown) => {
 // flips the moment an admin resumes.
 export const emitMarketState = (payload: unknown) => {
 	io?.to([ROOMS.market, ROOMS.lobby]).emit("marketStateUpdate", payload);
+};
+
+/** Ids of users with a socket in the market room: approved players and admins. */
+export const marketUserIds = (): string[] => {
+	if (!io) return [];
+	const ids = new Set<string>();
+	for (const socketId of io.sockets.adapter.rooms.get(ROOMS.market) ?? []) {
+		const userId = io.sockets.sockets.get(socketId)?.data?.userId;
+		if (typeof userId === "string") ids.add(userId);
+	}
+	return [...ids];
 };
 
 /** Ids of every user with at least one connected socket. */

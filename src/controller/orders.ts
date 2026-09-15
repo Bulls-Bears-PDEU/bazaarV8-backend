@@ -1,10 +1,13 @@
 import sql from "../database/database.js";
-import type {
-	FillResult,
-	Order,
-	OrderStatus,
-	PlaceOrderInput,
-	TradeLedgerEntry,
+import {
+	type FillResult,
+	ORDER_ACTIONS,
+	type Order,
+	type OrderAction,
+	type OrderStatus,
+	type PlaceOrderInput,
+	sideOfAction,
+	type TradeLedgerEntry,
 } from "../models/order.js";
 import { emitToUser } from "../realtime/emitter.js";
 import { TradingError } from "../trading/errors.js";
@@ -31,8 +34,26 @@ export const parsePlaceOrderInput = (body: unknown): PlaceOrderInput => {
 	if (!stockId) {
 		throw new TradingError("INVALID_ORDER", "stock_id must be a stock id.");
 	}
-	if (input.side !== "buy" && input.side !== "sell") {
-		throw new TradingError("INVALID_ORDER", 'side must be "buy" or "sell".');
+	// Players send an action. A bare side is still accepted for older callers,
+	// and then the position decides what it does, as it always did.
+	let action: OrderAction | null = null;
+	let side: "buy" | "sell";
+	if (input.action !== undefined) {
+		if (!ORDER_ACTIONS.includes(input.action as OrderAction)) {
+			throw new TradingError(
+				"INVALID_ORDER",
+				'action must be "buy", "sell", "short" or "cover".',
+			);
+		}
+		action = input.action as OrderAction;
+		side = sideOfAction(action);
+	} else if (input.side === "buy" || input.side === "sell") {
+		side = input.side;
+	} else {
+		throw new TradingError(
+			"INVALID_ORDER",
+			'action must be "buy", "sell", "short" or "cover".',
+		);
 	}
 	const orderType = input.order_type ?? "market";
 	if (orderType !== "market" && orderType !== "limit") {
@@ -63,7 +84,8 @@ export const parsePlaceOrderInput = (body: unknown): PlaceOrderInput => {
 
 	return {
 		stock_id: stockId,
-		side: input.side,
+		side,
+		action,
 		order_type: orderType,
 		quantity,
 		limit_price: limitPrice,
@@ -71,8 +93,9 @@ export const parsePlaceOrderInput = (body: unknown): PlaceOrderInput => {
 };
 
 /**
- * Fills immediately at the live price. Whether this buys, covers, sells or
- * shorts is decided inside bazaar_execute_fill from the current position.
+ * Fills immediately at the live price. With an action the settlement refuses
+ * anything that does not fit the position; without one (older callers) the
+ * position decides whether it buys, covers, sells or shorts.
  */
 export const placeMarketOrder = async (
 	userId: string,
@@ -88,7 +111,8 @@ export const placeMarketOrder = async (
 
 	const rows = await sql`
 		SELECT bazaar_place_market_order(
-			${userId}, ${input.stock_id}, ${input.side}, ${input.quantity}, ${price}
+			${userId}, ${input.stock_id}, ${input.side}, ${input.quantity}, ${price},
+			${input.action}
 		) AS result
 	`;
 	const result = rows[0].result as FillResult;
@@ -105,6 +129,7 @@ export type RestingOrderResult = {
 	user_id: string;
 	stock_id: number;
 	side?: "buy" | "sell";
+	action?: OrderAction | null;
 	quantity?: number;
 	limit_price?: number;
 	reserved_cash?: number;
@@ -137,7 +162,7 @@ export const placeLimitOrder = async (
 	const rows = await sql`
 		SELECT bazaar_place_limit_order(
 			${userId}, ${input.stock_id}, ${input.side}, ${input.quantity},
-			${input.limit_price}, ${price}
+			${input.limit_price}, ${price}, ${input.action}
 		) AS result
 	`;
 	const result = rows[0].result as FillResult | RestingOrderResult;
@@ -199,11 +224,13 @@ export const modifyOrder = async (
 // NUMERIC columns are cast to float8 so the driver returns numbers.
 const ORDER_COLUMNS = sql`
 	o.id::int AS id, o.user_id, o.stock_id, s.symbol, s.name,
-	o.side, o.order_type, o.quantity, o.filled_quantity,
+	o.side, o.action, o.order_type, o.quantity, o.filled_quantity,
 	o.limit_price::float8 AS limit_price,
 	o.average_fill_price::float8 AS average_fill_price,
 	o.reserved_cash::float8 AS reserved_cash,
 	o.reserved_margin::float8 AS reserved_margin,
+	-- What the order holds back from cash in total, for display.
+	(o.reserved_cash + o.reserved_margin)::float8 AS reserved_total,
 	o.status, o.reject_reason,
 	o.created_at, o.updated_at, o.filled_at, o.cancelled_at
 `;

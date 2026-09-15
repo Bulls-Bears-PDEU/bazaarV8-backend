@@ -62,8 +62,14 @@ export type MarketOverview = {
 	generated_at: string;
 	window_candles: number;
 	index: {
+		// Equal weighted, 100 where the market started: the same figure the
+		// player dashboard shows.
 		level: number | null;
+		// Since the start, so level - 100.
 		change_pct: number | null;
+		basis: IndexBasis;
+		// The index's move over the window of candles alone.
+		window_change_pct: number | null;
 		average_price: number | null;
 		priced_stocks: number;
 	};
@@ -119,8 +125,46 @@ export type MarketOverview = {
  */
 export type IndexBasis = "window" | "start";
 
+/**
+ * The Bazaar index at one moment: every stock weighted equally against its
+ * starting price, 100 where the market began. Computed only by the backend
+ * (marketIndex.ts), pushed as "indexTick" and served by /market/getIndex.
+ */
+/** One sector's average move since the start. */
+export type MarketSector = {
+	sector: string;
+	change_pct: number;
+	// Its stocks above and below their starting price.
+	advancing: number;
+	declining: number;
+	stock_count: number;
+};
+
+/** A stock's move since its starting price. */
+export type MarketMover = {
+	stock_id: number;
+	change_pct: number;
+};
+
+export type IndexSnapshot = {
+	level: number | null;
+	// level - 100.
+	change_pct: number | null;
+	// Stocks above, below and at their starting price.
+	advancing: number;
+	declining: number;
+	unchanged: number;
+	priced_stocks: number;
+	// Alphabetical.
+	sectors: MarketSector[];
+	// Biggest rises first, and biggest falls first.
+	top_gainers: MarketMover[];
+	top_losers: MarketMover[];
+	timestamp: string;
+};
+
 export type IndexHistory = {
-	points: { timestamp: string; value: number }[];
+	points: { timestamp: string; value: number; change_pct: number }[];
 	basis: IndexBasis;
 	window_candles: number;
 	stock_count: number;

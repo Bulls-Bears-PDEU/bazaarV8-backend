@@ -34,6 +34,7 @@ import {
 import { checkAlerts, drainTriggeredAlerts } from "../trading/alerts.js";
 import { toTradingError } from "../trading/errors.js";
 import { getPortfolio } from "../controller/portfolio.js";
+import { getTradeContext, previewIpoApplication, previewOrder } from "../trading/preview.js";
 import sql from "../database/database.js";
 import { initDB } from "../database/schema.js";
 import type { FillResult } from "../models/order.js";
@@ -236,6 +237,7 @@ const run = async () => {
 	await expectAccount("after the race", { cash: 1000, frozen: 0, volume: 90, avg: 100, margin: 0 });
 
 	await limitOrders();
+	await actions();
 	await watchlists();
 	await alerts();
 	await analytics();
@@ -279,6 +281,15 @@ const ipos = async () => {
 	await createPlayer(USER_B);
 	await createPlayer(USER_C);
 	const ipoId = await createTestIpo(IPO_SYMBOL);
+
+	const ipoPreview = await previewIpoApplication(USER_ID, ipoId, 7, 100);
+	check("preview: 7 lots @ 100 would hold", ipoPreview.ok ? ipoPreview.amount : ipoPreview.code, 7000);
+	check("preview: shares", ipoPreview.ok ? ipoPreview.shares : ipoPreview.code, 70);
+	check("preview holds nothing", await balances(USER_ID), "10000/0");
+	const [{ n: previewApps }] = await sql`SELECT count(*)::int AS n FROM ipo_applications WHERE ipo_id = ${ipoId}`;
+	check("preview writes no application", previewApps, 0);
+	const tooBig = await previewIpoApplication(USER_ID, ipoId, 11, 100);
+	check("preview: more lots than offered", tooBig.ok ? "accepted" : tooBig.code, "INVALID_QUANTITY");
 
 	await applyForIpo(USER_ID, ipoId, 7, 100);
 	await applyForIpo(USER_B, ipoId, 5, 100);
@@ -351,6 +362,14 @@ const analytics = async () => {
 	check("snapshot unrealized matches", snapshot.unrealized, portfolio.totals.unrealized_pnl);
 	// short 6 @ 100 marked at 90
 	check("short unrealized (100-90)*6", portfolio.totals.unrealized_pnl, 60);
+	check("total P&L = net worth - starting capital", portfolio.totals.total_pnl, portfolio.totals.net_worth - 500_000);
+	check("short count", portfolio.totals.short_count, 1);
+	check("position quantity is positive", portfolio.positions[0]?.quantity, 6);
+	check(
+		"allocation without longs is all cash",
+		portfolio.allocation.slices.map((s) => `${s.kind}:${s.pct}`).join(","),
+		"cash:100",
+	);
 
 	const curve = await getEquityCurve(USER_ID, 50);
 	check("curve starts at starting capital", curve.points[0].net_worth, 500_000);
@@ -568,6 +587,112 @@ const limitOrders = async () => {
 	check("shares = fills", after.volume, filledCount);
 	check("cash = 10000 - 50 per fill", after.cash, STARTING_CASH - 50 * filledCount);
 	console.log(`       (${filledCount} filled, ${cancelledCount} cancelled)`);
+};
+
+const act = async (action: "buy" | "sell" | "short" | "cover", quantity: number, price: number) => {
+	const side = action === "buy" || action === "cover" ? "buy" : "sell";
+	const rows = await sql`
+		SELECT bazaar_place_market_order(${USER_ID}, ${stockId}, ${side}, ${quantity}, ${price}, ${action}) AS result
+	`;
+	return rows[0].result as FillResult;
+};
+
+const actLimit = async (
+	action: "buy" | "sell" | "short" | "cover",
+	quantity: number,
+	limitPrice: number,
+	currentPrice: number,
+) => {
+	const side = action === "buy" || action === "cover" ? "buy" : "sell";
+	const rows = await sql`
+		SELECT bazaar_place_limit_order(
+			${USER_ID}, ${stockId}, ${side}, ${quantity}, ${limitPrice}, ${currentPrice}, ${action}
+		) AS result
+	`;
+	return rows[0].result as { status: string; order_id: number };
+};
+
+const actions = async () => {
+	console.log("\nactions: buy, sell, short and cover never flip a position");
+	await resetAccount();
+	await sql`UPDATE stocks SET last_price = 100 WHERE id = ${stockId}`;
+
+	check("sell with nothing held", await errorCode(() => act("sell", 1, 100)), "NO_POSITION");
+	check("cover with no short", await errorCode(() => act("cover", 1, 100)), "NO_POSITION");
+
+	await act("buy", 10, 100);
+	await expectAccount("buy 10 @ 100", { cash: 9000, frozen: 0, volume: 10, avg: 100, margin: 0 });
+	check("short while long", await errorCode(() => act("short", 1, 100)), "POSITION_CONFLICT");
+	check("cover while long", await errorCode(() => act("cover", 1, 100)), "NO_POSITION");
+	check("sell more than held", await errorCode(() => act("sell", 11, 100)), "INVALID_QUANTITY");
+	await expectAccount("refusals change nothing", { cash: 9000, frozen: 0, volume: 10, avg: 100, margin: 0 });
+
+	console.log("shares in open orders are not available twice");
+	const resting = await actLimit("sell", 6, 120, 100);
+	check("sell 6 @ 120 rests", resting.status, "pending");
+	check("selling 5 more than the 4 left", await errorCode(() => act("sell", 5, 100)), "INVALID_QUANTITY");
+	check("a second resting sell of 5", await errorCode(() => actLimit("sell", 5, 125, 100)), "INVALID_QUANTITY");
+	await act("sell", 4, 100);
+	await expectAccount("sold the 4 not promised", { cash: 9400, frozen: 0, volume: 6, avg: 100, margin: 0 });
+	check(
+		"modifying the resting sell beyond the holding",
+		await errorCode(() => sql`SELECT bazaar_modify_order(${resting.order_id}, ${USER_ID}, 7, NULL)`),
+		"INVALID_QUANTITY",
+	);
+
+	console.log("a resting order is checked again when it fills");
+	await sql`UPDATE user_portfolios SET volume = 3 WHERE user_id = ${USER_ID} AND stock_id = ${stockId}`;
+	addRestingOrder({ id: resting.order_id, userId: USER_ID, stockId, side: "sell", limitPrice: 120 });
+	matchTick([{ stock_id: stockId, close_price: 121 }]);
+	await drainQueuedFills();
+	check("rejected once the holding shrank below it", await orderStatus(resting.order_id), "rejected");
+	const [{ volume: leftVolume }] = await sql`
+		SELECT volume FROM user_portfolios WHERE user_id = ${USER_ID} AND stock_id = ${stockId}
+	`;
+	check("and never opened a short", leftVolume, 3);
+
+	console.log("shorts close with cover");
+	await resetAccount();
+	await act("short", 5, 100);
+	await expectAccount("short 5 @ 100", { cash: 9750, frozen: 250, volume: -5, avg: 100, margin: 250 });
+	check("buy while short", await errorCode(() => act("buy", 1, 100)), "POSITION_CONFLICT");
+	check("sell while short", await errorCode(() => act("sell", 1, 100)), "NO_POSITION");
+	check("cover more than owed", await errorCode(() => act("cover", 6, 100)), "INVALID_QUANTITY");
+	const covered = await act("cover", 5, 90);
+	check("cover legs", covered.fills.map((f) => `${f.transaction_type}:${f.quantity}`).join(","), "cover:5");
+	await expectAccount("covered 5 @ 90 (+50)", { cash: 10050, frozen: 0, volume: 0, avg: 0, margin: 0 });
+
+	console.log("previews dry-run the real settlement and keep nothing");
+	await resetAccount();
+	await sql`DELETE FROM user_stock_transactions WHERE user_id = ${USER_ID}`;
+	const noShares = await previewOrder(USER_ID, { stock_id: stockId, action: "sell", order_type: "market", quantity: 1 });
+	check("preview: sell with nothing held", noShares.ok ? "accepted" : noShares.code, "NO_POSITION");
+	const buyPreview = await previewOrder(USER_ID, { stock_id: stockId, action: "buy", order_type: "market", quantity: 10 });
+	check("preview: buy 10 fills", buyPreview.ok ? buyPreview.status : buyPreview.code, "filled");
+	check("preview: cash change", buyPreview.ok ? buyPreview.cash_change : null, -1000);
+	check("preview: position after", buyPreview.ok ? `${buyPreview.position_after?.side}:${buyPreview.position_after?.quantity}` : null, "long:10");
+	const limitPreview = await previewOrder(USER_ID, {
+		stock_id: stockId,
+		action: "buy",
+		order_type: "limit",
+		quantity: 10,
+		limit_price: 90,
+	});
+	check("preview: buy 10 @ 90 would rest", limitPreview.ok ? limitPreview.status : limitPreview.code, "pending");
+	check("preview: and set aside", limitPreview.ok ? limitPreview.reserved : null, 900);
+	await expectAccount("after previews", { cash: 10000, frozen: 0, volume: 0, avg: 0, margin: 0 });
+	const [{ n: previewOrders }] = await sql`SELECT count(*)::int AS n FROM orders WHERE user_id = ${USER_ID}`;
+	check("previews write no orders", previewOrders, 0);
+	const [{ n: previewTrades }] = await sql`SELECT count(*)::int AS n FROM user_stock_transactions WHERE user_id = ${USER_ID}`;
+	check("previews write no trades", previewTrades, 0);
+
+	await act("buy", 10, 100);
+	const context = await getTradeContext(USER_ID, stockId);
+	check("context: position", `${context.position?.side}:${context.position?.quantity}`, "long:10");
+	check("context: sell up to the holding", context.actions.sell.max_quantity, 10);
+	check("context: short unavailable while long", context.actions.short.available, false);
+	check("context: buy up to the cash (9000 / 100)", context.actions.buy.max_quantity, 90);
+	check("context: cover unavailable", context.actions.cover.available, false);
 };
 
 run()

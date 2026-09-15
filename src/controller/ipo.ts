@@ -44,6 +44,9 @@ export const getAllIpos = async (filters?: GetAllIpoFilters) => {
 			min_price,
 			status,
 			shares_offered,
+			-- Whole lots on offer, and one lot's cost at the top of the band.
+			(shares_offered / NULLIF(lot_size, 0))::int AS lots_offered,
+			(lot_size * max_price)::float8 AS lot_value_at_max,
 			listing_price,
 			allotment_price,
 			allotment_completed_at,

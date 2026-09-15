@@ -11,8 +11,9 @@
  *   - correlated moves: a market factor and a sector factor, so the index and
  *     each sector move together the way they do on a real exchange
  *   - volatility regimes: each stock drifts between calm and busy spells
- *   - admin sentiment: a drift measured in standard deviations per hour, eased
- *     in over a couple of minutes instead of kinking every chart at once
+ *   - admin sentiment: a repricing when it changes, then a drift, both measured
+ *     in standard deviations and eased in over a couple of minutes instead of
+ *     kinking every chart at once
  *   - news: a percentage move priced in over the following minute, with a
  *     burst of volatility after it
  *
@@ -24,7 +25,8 @@ import config from "./config/config.js";
 import { getMarketState } from "./controller/market.js";
 import sql from "./database/database.js";
 import eventEmitter from "./eventEmitter.js";
-import type { MarketSentiment } from "./models/market.js";
+import { computeIndexSnapshot, sinceStart } from "./marketIndex.js";
+import type { IndexSnapshot, MarketSentiment } from "./models/market.js";
 import type { StockOHLC } from "./models/stock.js";
 import { emitToAdmins, emitToMarket } from "./realtime/emitter.js";
 import { checkAlerts } from "./trading/alerts.js";
@@ -68,19 +70,27 @@ const SQRT_YEARS_PER_TICK = Math.sqrt(YEARS_PER_TICK);
 // (about 1% over a session) instead of being a pure coin toss.
 const ANNUAL_DRIFT = 0.12;
 
-// Sentiment tilts every stock by this many of its own hourly standard
-// deviations per hour. Measured in sigmas rather than percent, so it shows
-// through the noise on calm and volatile stocks alike: an hour into a bullish
-// market about three stocks in four are up, and the index far more often.
-// Nine hours of it adds about 15% to a typical large cap.
-const SENTIMENT_SIGMAS_PER_HOUR = 0.75;
+// Sentiment works in two parts, both measured in each stock's own hourly
+// standard deviations so it shows on calm and volatile stocks alike.
+//
+// A change of sentiment is first repriced: every stock moves this many hourly
+// sigmas as the new sentiment eases in (about 0.7% for a typical large cap,
+// twice that for a flip from bearish to bullish). A drift alone grows with
+// time while the noise grows with its square root, so it would take the best
+// part of an hour to show; the repricing is what makes the market react.
+// A few minutes into a bullish market about nine stocks in ten are up.
+const SENTIMENT_REPRICE_SIGMAS = 0.3;
+// Then it keeps tilting every stock by this many hourly sigmas per hour, so
+// the trend carries on: an hour in, about nine stocks in ten are still up and
+// nine hours of it adds about 20% to a typical large cap.
+const SENTIMENT_SIGMAS_PER_HOUR = 1;
 const SENTIMENT_DIRECTION: Record<MarketSentiment, number> = {
 	bullish: 1,
 	bearish: -1,
 	neutral: 0,
 };
-// Time constant of the ease into a new sentiment, in ticks: most of the way
-// there after two or three minutes.
+// Time constant of the ease into a new sentiment, in ticks: two thirds of the
+// repricing lands in the first minute and 95% within three.
 const SENTIMENT_EASE_TICKS = 60;
 
 // How each stock's variance splits between the whole market, its sector and
@@ -176,6 +186,8 @@ type SimulatedStock = {
 	symbol: string;
 	sector: string;
 	volatility: number;
+	// What the Bazaar index measures this stock from; null until it has one.
+	startingPrice: number | null;
 };
 
 type LiveStockState = {
@@ -205,6 +217,8 @@ const unpricedStocks = new Set<number>();
 const warnedUnpricedStocks = new Set<number>();
 
 let sentimentLevel: number | null = null;
+// The index after the latest tick, for the API. Null until the first tick.
+let latestIndex: IndexSnapshot | null = null;
 // Wall clock at which the market was paused, for the resume log.
 let pausedSince: number | null = null;
 let unsavedCandles: Candle[] = [];
@@ -234,7 +248,12 @@ const getSimulatedStocks = async (): Promise<SimulatedStock[]> => {
 		return stockListCache.stocks;
 	}
 	const rows = await sql`
-		SELECT id, symbol, sector, volatility::float8 AS volatility
+		SELECT
+			id,
+			symbol,
+			sector,
+			volatility::float8 AS volatility,
+			starting_price::float8 AS starting_price
 		FROM stocks
 		ORDER BY id
 	`;
@@ -243,6 +262,8 @@ const getSimulatedStocks = async (): Promise<SimulatedStock[]> => {
 		symbol: String(row.symbol),
 		sector: String(row.sector),
 		volatility: normalizeVolatility(Number(row.volatility)),
+		startingPrice:
+			row.starting_price === null ? null : Number(row.starting_price),
 	}));
 	stockListCache = { stocks, loadedAt: Date.now() };
 
@@ -376,19 +397,23 @@ eventEmitter.on("newsReleased", ({ id }: { id: number }) => {
 // The tick
 // ---------------------------------------------------------------------------
 
+/**
+ * Moves the sentiment level a step towards the admin's setting and returns it
+ * with the step taken, which is what gets repriced. On the first tick the
+ * level starts at the setting with no step, since the stored prices already
+ * reflect whatever sentiment the market had before a restart.
+ */
 const easeSentiment = (sentiment: MarketSentiment) => {
 	const target = SENTIMENT_DIRECTION[sentiment] ?? 0;
-	sentimentLevel =
-		sentimentLevel === null
-			? target
-			: sentimentLevel + (target - sentimentLevel) / SENTIMENT_EASE_TICKS;
-	return sentimentLevel;
+	const previous = sentimentLevel ?? target;
+	sentimentLevel = previous + (target - previous) / SENTIMENT_EASE_TICKS;
+	return { level: sentimentLevel, change: sentimentLevel - previous };
 };
 
 type TickShocks = {
 	market: number;
 	sector: number;
-	sentiment: number;
+	sentiment: { level: number; change: number };
 };
 
 /** Moves one stock's price by one tick. */
@@ -413,13 +438,12 @@ const stepPrice = (
 
 	state.logRegime = nextRegime(state.logRegime);
 
+	const hourlySigma = sigma * SQRT_YEARS_PER_TICK * Math.sqrt(TICKS_PER_HOUR);
 	const drift =
 		ANNUAL_DRIFT * YEARS_PER_TICK +
-		(shocks.sentiment *
-			SENTIMENT_SIGMAS_PER_HOUR *
-			sigma *
-			SQRT_YEARS_PER_TICK) /
-			Math.sqrt(TICKS_PER_HOUR);
+		(shocks.sentiment.level * SENTIMENT_SIGMAS_PER_HOUR * hourlySigma) /
+			TICKS_PER_HOUR +
+		shocks.sentiment.change * SENTIMENT_REPRICE_SIGMAS * hourlySigma;
 	const tickVolatility =
 		sigma * Math.exp(state.logRegime) * SQRT_YEARS_PER_TICK;
 	const shock =
@@ -567,6 +591,11 @@ const runTick = async () => {
 	// Every stock's candle after this tick, sent as one message, and the
 	// candles that finished this tick, saved as one insert.
 	const tickCandles: Candle[] = [];
+	// The same candles with the move since the starting price, for players.
+	const playerCandles: (Candle & {
+		change: number | null;
+		change_pct: number | null;
+	})[] = [];
 	const completedCandles: Candle[] = [];
 
 	for (const stock of stocks) {
@@ -590,13 +619,34 @@ const runTick = async () => {
 
 		const candle = { ...(state.candle as Candle) };
 		tickCandles.push(candle);
+		// Players see every move measured from the starting price; it is worked
+		// out here, once, and travels with the candle.
+		const move = sinceStart(state.price, stock.startingPrice);
+		playerCandles.push({
+			...candle,
+			change: move?.change ?? null,
+			change_pct: move?.change_pct ?? null,
+		});
 		// Admin panel compatibility: it still listens for one message per
 		// stock. Players only get the batched marketTick below.
 		emitToAdmins("stockPriceUpdate", candle);
 	}
 
 	// One message per second for the whole market, instead of one per stock.
-	emitToMarket("marketTick", tickCandles);
+	emitToMarket("marketTick", playerCandles);
+
+	// The index from the prices this tick produced, so every screen shows the
+	// same figure without working it out itself.
+	latestIndex = computeIndexSnapshot(
+		stocks.map((stock) => ({
+			stockId: stock.id,
+			sector: stock.sector,
+			price: liveStockState.get(stock.id)?.price,
+			startingPrice: stock.startingPrice,
+		})),
+		now,
+	);
+	emitToMarket("indexTick", latestIndex);
 
 	// In-memory only: queues crossing limit orders and alerts for the drain in
 	// app.ts, so fills never slow the tick down.
@@ -641,6 +691,9 @@ export const getLiveMarketData = () => {
 	}
 	return live;
 };
+
+/** The index as of the latest tick, or null before the engine has ticked. */
+export const getLatestIndex = (): IndexSnapshot | null => latestIndex;
 
 /**
  * The price a stock last ticked at, or undefined before the engine has loaded

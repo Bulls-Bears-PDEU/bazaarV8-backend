@@ -21,6 +21,9 @@ export type Ipo = {
 	min_price: number;
 	status: IpoStatus;
 	shares_offered: number;
+	// Whole lots on offer, and one lot at the top of the band.
+	lots_offered?: number;
+	lot_value_at_max?: number;
 	listing_price: number;
 	// Set when allotment runs; the price every allottee pays.
 	allotment_price: number | null;

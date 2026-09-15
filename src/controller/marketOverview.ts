@@ -1,12 +1,14 @@
 import sql from "../database/database.js";
+import { computeIndexSnapshot } from "../marketIndex.js";
 import type {
 	IndexBasis,
 	IndexHistory,
+	IndexSnapshot,
 	MarketOverview,
 	SectorSnapshot,
 	StockSnapshot,
 } from "../models/market.js";
-import { getLiveMarketData } from "../stockEngine.js";
+import { getLatestIndex, getLiveMarketData } from "../stockEngine.js";
 import { getMarketState } from "./market.js";
 
 // A candle covers 10 seconds, so the default window looks back over the last
@@ -30,6 +32,43 @@ const clampWindow = (candles: number) =>
 		Math.max(Math.trunc(candles) || DEFAULT_OVERVIEW_CANDLES, 2),
 		MAX_OVERVIEW_CANDLES,
 	);
+
+/** Each stock's starting price by id: the reference players measure every change from. */
+const fetchStartingPrices = async () => {
+	const rows = await sql`
+		SELECT id, starting_price::float8 AS starting_price
+		FROM stocks
+		WHERE starting_price > 0
+	`;
+	return new Map(rows.map((row) => [Number(row.id), Number(row.starting_price)]));
+};
+
+/**
+ * The Bazaar index right now: the engine's snapshot from its latest tick, or,
+ * before it has ticked (a paused market after a restart), the same calculation
+ * over the last prices it wrote.
+ */
+export const getCurrentIndex = async (): Promise<IndexSnapshot> => {
+	const latest = getLatestIndex();
+	if (latest) return latest;
+	const rows = await sql`
+		SELECT
+			id,
+			sector,
+			last_price::float8 AS last_price,
+			starting_price::float8 AS starting_price
+		FROM stocks
+	`;
+	return computeIndexSnapshot(
+		rows.map((row) => ({
+			stockId: Number(row.id),
+			sector: String(row.sector),
+			price: row.last_price === null ? null : Number(row.last_price),
+			startingPrice:
+				row.starting_price === null ? null : Number(row.starting_price),
+		})),
+	);
+};
 
 /**
  * The candles every reading on the market page is derived from: what has been
@@ -143,7 +182,9 @@ const aggregateIndex = (
 		}
 
 		if (contributors && timestamp) {
-			history.push({ timestamp, value: (total / contributors) * 100 });
+			const value = (total / contributors) * 100;
+			// How far this point is from 100, the start of its basis.
+			history.push({ timestamp, value, change_pct: value - 100 });
 		}
 	}
 
@@ -227,7 +268,10 @@ export const getMarketOverview = async (
 	candles = DEFAULT_OVERVIEW_CANDLES,
 ): Promise<MarketOverview> => {
 	const windowCandles = clampWindow(candles);
-	const series = await fetchCandleSeries(windowCandles);
+	const [series, currentIndex] = await Promise.all([
+		fetchCandleSeries(windowCandles),
+		getCurrentIndex(),
+	]);
 
 	const [
 		state,
@@ -308,11 +352,11 @@ export const getMarketOverview = async (
 		(a, b) => (b.change_pct ?? 0) - (a.change_pct ?? 0),
 	);
 
-	// The level is the final point of the very series the chart draws, so the
-	// number above the graph cannot disagree with where the line ends.
-	const indexPoints = aggregateIndex(series);
-	const level = indexPoints.length
-		? indexPoints[indexPoints.length - 1].value
+	// The same index snapshot the engine pushes to both apps every tick.
+	// How far it moved over the window alone, for the movers beside it.
+	const windowPoints = aggregateIndex(series);
+	const windowLevel = windowPoints.length
+		? windowPoints[windowPoints.length - 1].value
 		: null;
 
 	const withPrice = stocks.filter((stock) => stock.current_price !== null);
@@ -337,8 +381,10 @@ export const getMarketOverview = async (
 		generated_at: new Date().toISOString(),
 		window_candles: windowCandles,
 		index: {
-			level,
-			change_pct: level === null ? null : level - 100,
+			level: currentIndex.level,
+			change_pct: currentIndex.change_pct,
+			basis: "start",
+			window_change_pct: windowLevel === null ? null : windowLevel - 100,
 			average_price: averagePrice,
 			priced_stocks: priced.length,
 		},
@@ -413,18 +459,10 @@ export const getIndexHistory = async (
 	basis: IndexBasis = "window",
 ): Promise<IndexHistory> => {
 	const limit = clampWindow(points);
-	const [series, startRows] = await Promise.all([
+	const [series, bases] = await Promise.all([
 		fetchCandleSeries(limit),
-		basis === "start"
-			? sql`SELECT id, starting_price::float8 AS starting_price FROM stocks WHERE starting_price > 0`
-			: Promise.resolve([]),
+		basis === "start" ? fetchStartingPrices() : Promise.resolve(undefined),
 	]);
-	const bases =
-		basis === "start"
-			? new Map(
-					startRows.map((row) => [Number(row.id), Number(row.starting_price)]),
-				)
-			: undefined;
 
 	return {
 		points: aggregateIndex(series, bases),

@@ -78,16 +78,17 @@ export const getEquityCurve = async (userId: string, points = 200) => {
 		(_, index) => index % stride === 0 || index === snapshots.length - 1,
 	);
 
+	// Each point with its P&L and return against the starting capital.
+	const point = (timestamp: string, netWorth: number) => ({
+		timestamp,
+		net_worth: netWorth,
+		pnl: round2(netWorth - STARTING_CAPITAL),
+		return_pct: round2(((netWorth - STARTING_CAPITAL) / STARTING_CAPITAL) * 100),
+	});
 	const series = [
-		{
-			timestamp: new Date(userRows[0]?.created_at ?? Date.now()).toISOString(),
-			net_worth: STARTING_CAPITAL,
-		},
-		...sampled.map((row) => ({
-			timestamp: new Date(row.captured_at).toISOString(),
-			net_worth: row.net_worth as number,
-		})),
-		{ timestamp: new Date().toISOString(), net_worth: portfolio.totals.net_worth },
+		point(new Date(userRows[0]?.created_at ?? Date.now()).toISOString(), STARTING_CAPITAL),
+		...sampled.map((row) => point(new Date(row.captured_at).toISOString(), row.net_worth as number)),
+		point(new Date().toISOString(), portfolio.totals.net_worth),
 	];
 	return { points: series, starting_capital: STARTING_CAPITAL };
 };

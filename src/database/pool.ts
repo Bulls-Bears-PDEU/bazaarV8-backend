@@ -1,5 +1,7 @@
 import pg from "pg";
 import config from "../config/config.js";
+// Before any query runs: TIMESTAMP columns hold UTC.
+import "./timestamps.js";
 
 // pg hands NUMERIC back as a string to avoid precision loss. Money here is
 // NUMERIC(15,2) and stays well inside a double's exact range, so parse it once

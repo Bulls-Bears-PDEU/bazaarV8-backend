@@ -1,4 +1,14 @@
 export type OrderSide = "buy" | "sell";
+/**
+ * What the player asks for. buy opens or adds to a long, sell closes a long,
+ * short opens or adds to a short, cover closes a short. The server refuses an
+ * action that does not fit the position, so nothing ever flips by accident.
+ */
+export type OrderAction = "buy" | "sell" | "short" | "cover";
+export const ORDER_ACTIONS: OrderAction[] = ["buy", "sell", "short", "cover"];
+/** The side the matcher works with: buy and cover take shares, sell and short give them. */
+export const sideOfAction = (action: OrderAction): OrderSide =>
+	action === "buy" || action === "cover" ? "buy" : "sell";
 export type OrderType = "market" | "limit";
 export type OrderStatus = "pending" | "filled" | "cancelled" | "rejected";
 // What a fill actually did, derived from the position: a buy covers a short
@@ -12,6 +22,8 @@ export type Order = {
 	symbol: string;
 	name: string;
 	side: OrderSide;
+	// Null for orders placed before actions existed.
+	action: OrderAction | null;
 	order_type: OrderType;
 	quantity: number;
 	filled_quantity: number;
@@ -19,6 +31,8 @@ export type Order = {
 	average_fill_price: number | null;
 	reserved_cash: number;
 	reserved_margin: number;
+	// reserved_cash + reserved_margin, for display.
+	reserved_total: number;
 	status: OrderStatus;
 	reject_reason: string | null;
 	created_at: string;
@@ -42,6 +56,7 @@ export type FillResult = {
 	user_id: string;
 	stock_id: number;
 	side: OrderSide;
+	action: OrderAction | null;
 	order_type: OrderType;
 	quantity: number;
 	price: number;
@@ -60,6 +75,8 @@ export type FillResult = {
 export type PlaceOrderInput = {
 	stock_id: number;
 	side: OrderSide;
+	// Null only for callers that still send a bare side.
+	action: OrderAction | null;
 	order_type: OrderType;
 	quantity: number;
 	limit_price?: number;

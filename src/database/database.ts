@@ -1,5 +1,7 @@
 import { neon } from "@neondatabase/serverless";
 import config from "../config/config.js";
+// Before any query runs: TIMESTAMP columns hold UTC.
+import "./timestamps.js";
 
 // HTTP driver for reads and single statements. Anything that must read and
 // then write atomically goes through the pg pool in pool.ts instead. The

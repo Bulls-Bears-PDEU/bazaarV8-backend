@@ -26,6 +26,7 @@ import { drainTriggeredAlerts, loadActiveAlerts } from "./trading/alerts.js";
 import watchlistRouter from "./routes/watchlist.js";
 import { capturePortfolioSnapshots } from "./controller/analytics.js";
 import alertRouter from "./routes/alerts.js";
+import { publishLivePortfolios } from "./realtime/livePortfolio.js";
 
 const app: express.Application = express();
 
@@ -153,6 +154,14 @@ export const startBackgroundJobs = async () => {
       console.error("Error firing price alerts:", err);
     });
   }, 250);
+
+  // Every online player's portfolio at live prices, valued here so the app
+  // only displays it.
+  setInterval(() => {
+    publishLivePortfolios().catch((err) => {
+      console.error("Error publishing live portfolios:", err);
+    });
+  }, TICK_INTERVAL_MS);
 
   setInterval(() => {
     broadcastLeaderboard().catch((err) => {

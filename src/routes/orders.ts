@@ -16,6 +16,7 @@ import requireApprovedUser from "../middleware/requireApprovedUser.js";
 import requireMarketOpen from "../middleware/requireMarketOpen.js";
 import type { OrderStatus } from "../models/order.js";
 import { sendTradingError, TradingError } from "../trading/errors.js";
+import { getTradeContext, previewOrder } from "../trading/preview.js";
 
 const ORDER_STATUSES: OrderStatus[] = [
 	"pending",
@@ -33,9 +34,11 @@ const orderRouter = Router();
 
 orderRouter.use(requireApprovedUser);
 
-// Body: { stock_id, side: "buy" | "sell", order_type: "market" | "limit",
-//         quantity, limit_price? }. The server decides whether a sell closes a
-// long or opens a short, and whether a buy covers a short.
+// Body: { stock_id, action: "buy" | "sell" | "short" | "cover",
+//         order_type: "market" | "limit", quantity, limit_price? }.
+// An action that does not fit the position is refused (POSITION_CONFLICT,
+// NO_POSITION, INVALID_QUANTITY). A bare side instead of an action is still
+// accepted from older callers, and then the position decides what it does.
 // Response: a fill ({ status: "filled", fills, position, ... }) or, for a limit
 // order that is not marketable, the resting order ({ status: "pending", ... }).
 orderRouter.post("/placeOrder", requireMarketOpen, async (req, res) => {
@@ -47,6 +50,50 @@ orderRouter.post("/placeOrder", requireMarketOpen, async (req, res) => {
 				? await placeLimitOrder(userId, input)
 				: await placeMarketOrder(userId, input);
 		res.status(201).json(result);
+	} catch (error) {
+		sendTradingError(res, error);
+	}
+});
+
+// ?stock_id=&limit_price= The player's position in a stock and what Buy, Sell,
+// Short and Cover can each do right now, sized at the limit price if given.
+orderRouter.get("/getTradeContext", async (req, res) => {
+	try {
+		const stockId = optionalId(req.query.stock_id);
+		if (!stockId) {
+			throw new TradingError("STOCK_NOT_FOUND", "Stock not found.");
+		}
+		const limit = req.query.limit_price === undefined ? undefined : Number(req.query.limit_price);
+		res.json(
+			await getTradeContext(
+				getSessionUser(res).id,
+				stockId,
+				limit !== undefined && Number.isFinite(limit) && limit > 0 ? limit : undefined,
+			),
+		);
+	} catch (error) {
+		sendTradingError(res, error);
+	}
+});
+
+// Body: as placeOrder, with an action. Answers what the order would do
+// ({ ok: true, legs, cash_change, position_after, ... }) or why it would be
+// refused ({ ok: false, code, message }), without placing it.
+orderRouter.post("/previewOrder", async (req, res) => {
+	try {
+		const input = parsePlaceOrderInput(req.body);
+		if (!input.action) {
+			throw new TradingError("INVALID_ORDER", 'action must be "buy", "sell", "short" or "cover".');
+		}
+		res.json(
+			await previewOrder(getSessionUser(res).id, {
+				stock_id: input.stock_id,
+				action: input.action,
+				order_type: input.order_type,
+				quantity: input.quantity,
+				limit_price: input.limit_price,
+			}),
+		);
 	} catch (error) {
 		sendTradingError(res, error);
 	}

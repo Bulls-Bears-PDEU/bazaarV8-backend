@@ -21,6 +21,7 @@ import requireAdmin from "../middleware/requireAdmin.js";
 import requireApprovedUser from "../middleware/requireApprovedUser.js";
 import requireMarketOpen from "../middleware/requireMarketOpen.js";
 import { sendTradingError, TradingError } from "../trading/errors.js";
+import { previewIpoApplication } from "../trading/preview.js";
 
 const ipoRouter = Router();
 
@@ -281,6 +282,24 @@ ipoRouter.post("/applyForIpo/:id", requireMarketOpen, async (req, res) => {
 			bid,
 		);
 		res.status(201).json(result);
+	} catch (error) {
+		sendTradingError(res, error);
+	}
+});
+
+// Body: { lots, bid_price? }. What applying would hold back from cash, or why
+// it would be refused, without applying.
+ipoRouter.post("/previewApplication/:id", async (req, res) => {
+	try {
+		const lots = Number(req.body?.lots);
+		if (!Number.isInteger(lots) || lots <= 0) {
+			throw new TradingError("INVALID_QUANTITY", "lots must be a whole number above zero.");
+		}
+		const bid = req.body?.bid_price === undefined ? undefined : Number(req.body.bid_price);
+		if (bid !== undefined && (!Number.isFinite(bid) || bid <= 0)) {
+			throw new TradingError("INVALID_INPUT", "bid_price must be a price.");
+		}
+		res.json(await previewIpoApplication(getSessionUser(res).id, ipoIdParam(req.params.id), lots, bid));
 	} catch (error) {
 		sendTradingError(res, error);
 	}

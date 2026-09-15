@@ -11,6 +11,10 @@ export type TradingErrorCode =
 	| "STOCK_NOT_FOUND"
 	| "MARKET_PAUSED"
 	| "SHORTING_DISABLED"
+	// The action does not fit the position: buying while short, shorting while long.
+	| "POSITION_CONFLICT"
+	// Selling or covering with nothing of that kind to close.
+	| "NO_POSITION"
 	| "LIMIT_ORDERS_DISABLED"
 	| "INVALID_ORDER"
 	| "INVALID_QUANTITY"
@@ -40,6 +44,8 @@ const STATUS_BY_CODE: Record<TradingErrorCode, number> = {
 	STOCK_NOT_FOUND: 404,
 	MARKET_PAUSED: 403,
 	SHORTING_DISABLED: 403,
+	POSITION_CONFLICT: 409,
+	NO_POSITION: 409,
 	LIMIT_ORDERS_DISABLED: 403,
 	INVALID_ORDER: 400,
 	INVALID_QUANTITY: 400,
