@@ -27,6 +27,16 @@ export const initDB = async () => {
     `;
 	// Optional company logo; players see a monogram when it is unset.
 	await sql`ALTER TABLE stocks ADD COLUMN IF NOT EXISTS logo_url TEXT`;
+	// Uploaded logos, stored the way avatars are so both apps -- on different
+	// origins -- load them from the backend. Always a re-encoded 256px WebP, so
+	// a row is a few kilobytes however large the upload was.
+	await sql`
+    CREATE TABLE IF NOT EXISTS stock_logos (
+        stock_id INTEGER PRIMARY KEY REFERENCES stocks(id) ON DELETE CASCADE,
+        content_type VARCHAR(20) NOT NULL,
+        data BYTEA NOT NULL,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`;
 	await sql`
     CREATE TABLE IF NOT EXISTS user_stock_transactions (
         id SERIAL PRIMARY KEY,
@@ -1526,6 +1536,15 @@ const migrateUserProfiles = async () => {
         data BYTEA NOT NULL,
         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`;
+	// Photos uploaded before avatar URLs became paths carry whatever BACKEND_URL
+	// was then. Only our own photos are rewritten: users.image can also hold a
+	// sign-in provider's picture, which must stay a full URL.
+	await sql`
+    UPDATE users u
+    SET image = regexp_replace(u.image, '^https?://[^/]+(/users/avatar/)', '\\1')
+    WHERE u.image ~ '^https?://[^/]+/users/avatar/'
+      AND EXISTS (SELECT 1 FROM user_avatars a WHERE a.user_id = u.id)
+    `;
 	await sql`
     CREATE INDEX IF NOT EXISTS users_created_at_idx ON users ("createdAt" DESC)
     `;

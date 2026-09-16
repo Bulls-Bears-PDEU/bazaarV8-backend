@@ -10,6 +10,7 @@
     "dev": "nodemon --watch src --ext ts --exec tsx src/server.ts",
     "seed:stocks": "tsx src/scripts/generateStocks.ts",
     "set-role": "tsx src/scripts/setUserRole.ts",
+    "set-logos": "tsx src/scripts/setStockLogos.ts",
     "smoke:trading": "tsx src/scripts/tradingSmoke.ts"
   },
   "keywords": [],
@@ -40,6 +41,7 @@
     "nodemailer": "^10.0.3",
     "pg": "^8.23.0",
     "resend": "^6.27.0",
+    "sharp": "^0.35.4",
     "socket.io": "^4.8.3"
   }
 }

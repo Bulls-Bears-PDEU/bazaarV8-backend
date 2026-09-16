@@ -1,12 +1,12 @@
 import express, { Router } from "express";
 import {
-	AVATAR_MAX_BYTES,
 	getAvatar,
 	removeAvatar,
 	setAvatar,
 	updateProfile,
 } from "../controller/profile.js";
 import { approveUser } from "../controller/user.js";
+import { IMAGE_UPLOAD_MAX_BYTES, IMAGE_UPLOAD_TYPES } from "../lib/images.js";
 import { getSessionUser } from "../lib/session.js";
 import requireAdmin from "../middleware/requireAdmin.js";
 import requireApprovedUser from "../middleware/requireApprovedUser.js";
@@ -42,11 +42,12 @@ userRouter.get("/avatar/:id", async (req, res) => {
 });
 
 // Body: the photo's bytes (image/webp, image/png or image/jpeg). The app crops
-// and shrinks it first.
+// and shrinks it first, and the server re-encodes it anyway; the limit here is
+// only on what may be sent, not on what is stored.
 userRouter.put(
 	"/me/avatar",
 	requireApprovedUser,
-	express.raw({ type: ["image/webp", "image/png", "image/jpeg"], limit: AVATAR_MAX_BYTES }),
+	express.raw({ type: [...IMAGE_UPLOAD_TYPES], limit: IMAGE_UPLOAD_MAX_BYTES }),
 	async (req, res) => {
 		try {
 			res.json(await setAvatar(getSessionUser(res).id, req.body));

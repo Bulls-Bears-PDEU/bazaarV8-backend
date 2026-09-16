@@ -1,4 +1,4 @@
-import { Router } from "express";
+import express, { Router } from "express";
 
 import {
 	addStock,
@@ -13,10 +13,40 @@ import {
 	searchStocks,
 	updateStock,
 } from "../controller/stock.js";
+import {
+	getStockLogo,
+	removeStockLogo,
+	setStockLogo,
+} from "../controller/stockLogos.js";
+import { IMAGE_UPLOAD_MAX_BYTES, IMAGE_UPLOAD_TYPES } from "../lib/images.js";
 import requireAdmin from "../middleware/requireAdmin.js";
 import requireApprovedUser from "../middleware/requireApprovedUser.js";
+import { sendTradingError } from "../trading/errors.js";
 
 const stockRouter = Router();
+
+// Registered before the guard below: an <img> on another origin cannot be
+// relied on to carry a session, and a company logo is not private.
+// A stock's logo, as uploaded. Public and cached for good: the URL carries a
+// version, so a new logo is a new URL.
+stockRouter.get("/logo/:id", async (req, res) => {
+	try {
+		const logo = await getStockLogo(Number(req.params.id));
+		if (!logo) return res.status(404).end();
+		res.set({
+			"Content-Type": logo.contentType,
+			"Cache-Control": "public, max-age=31536000, immutable",
+			"Last-Modified": logo.updatedAt.toUTCString(),
+			"X-Content-Type-Options": "nosniff",
+			// Loaded by the player app and the admin panel, on other origins.
+			"Cross-Origin-Resource-Policy": "cross-origin",
+		});
+		res.send(logo.data);
+	} catch (error) {
+		console.error("Error serving stock logo:", error);
+		res.status(500).end();
+	}
+});
 
 stockRouter.use(requireApprovedUser);
 
@@ -100,6 +130,29 @@ stockRouter.get("/getStockById/:id", async (req, res) => {
 	} catch (error) {
 		console.error("Error fetching stock by ID:", error);
 		res.status(500).json({ error: "Internal Server Error" });
+	}
+});
+
+// Body: the image's bytes (webp, png or jpeg). Re-encoded before it is stored.
+stockRouter.put(
+	"/:id/logo",
+	requireAdmin,
+	express.raw({ type: [...IMAGE_UPLOAD_TYPES], limit: IMAGE_UPLOAD_MAX_BYTES }),
+	async (req, res) => {
+		try {
+			res.json(await setStockLogo(Number(req.params.id), req.body));
+		} catch (error) {
+			sendTradingError(res, error);
+		}
+	},
+);
+
+stockRouter.delete("/:id/logo", requireAdmin, async (req, res) => {
+	try {
+		await removeStockLogo(Number(req.params.id));
+		res.status(204).end();
+	} catch (error) {
+		sendTradingError(res, error);
 	}
 });
 
