@@ -40,7 +40,9 @@ const fetchStartingPrices = async () => {
 		FROM stocks
 		WHERE starting_price > 0
 	`;
-	return new Map(rows.map((row) => [Number(row.id), Number(row.starting_price)]));
+	return new Map(
+		rows.map((row) => [Number(row.id), Number(row.starting_price)]),
+	);
 };
 
 /**
@@ -298,13 +300,16 @@ export const getMarketOverview = async (
 				COALESCE(SUM(volume) FILTER (WHERE transaction_type IN ('sell', 'short')), 0)::float8 AS sell_volume
 			FROM user_stock_transactions
 		`,
+		// Players only, matching the leaderboard's 'user' role. An organiser's own
+		// account holds starting capital it will never trade, and counting it
+		// inflates every figure on this screen.
 		sql`
 			SELECT
-				COUNT(*)::int AS total_users,
-				COUNT(*) FILTER (WHERE role IS DISTINCT FROM 'pending')::int AS approved_users,
+				COUNT(*) FILTER (WHERE role <> 'admin')::int AS total_users,
+				COUNT(*) FILTER (WHERE role = 'user')::int AS approved_users,
 				COUNT(*) FILTER (WHERE role = 'pending')::int AS pending_users,
-				COALESCE(SUM(cash_balance), 0)::float8 AS total_cash,
-				COALESCE(SUM(frozen_balance), 0)::float8 AS total_frozen
+				COALESCE(SUM(cash_balance) FILTER (WHERE role = 'user'), 0)::float8 AS total_cash,
+				COALESCE(SUM(frozen_balance) FILTER (WHERE role = 'user'), 0)::float8 AS total_frozen
 			FROM users
 		`,
 		// Valued at stocks.last_price, the engine's live price. stock_ohlc is
@@ -325,13 +330,17 @@ export const getMarketOverview = async (
 				COALESCE(SUM(p.margin_locked), 0)::float8 AS margin_locked
 			FROM user_portfolios p
 			JOIN stocks s ON s.id = p.stock_id
-			WHERE p.volume <> 0
+			JOIN users u ON u.id = p.user_id
+			-- Players only, like the counts above: an organiser trading from god
+			-- mode is not part of the market these figures describe.
+			WHERE p.volume <> 0 AND u.role = 'user'
 		`,
 		sql`
 			SELECT
 				COUNT(*) FILTER (WHERE is_released)::int AS released,
-				COUNT(*) FILTER (WHERE NOT is_released)::int AS scheduled,
-				MIN(release_at) FILTER (WHERE NOT is_released) AS next_release_at
+				-- Hidden stories were released once and are not coming back by themselves.
+				COUNT(*) FILTER (WHERE NOT is_released AND first_released_at IS NULL)::int AS scheduled,
+				MIN(release_at) FILTER (WHERE NOT is_released AND first_released_at IS NULL) AS next_release_at
 			FROM news
 		`,
 		sql`

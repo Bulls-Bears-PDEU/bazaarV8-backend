@@ -20,6 +20,7 @@ import { getSessionUser } from "../lib/session.js";
 import requireAdmin from "../middleware/requireAdmin.js";
 import requireApprovedUser from "../middleware/requireApprovedUser.js";
 import requireMarketOpen from "../middleware/requireMarketOpen.js";
+import requireOnboarded from "../middleware/requireOnboarded.js";
 import { sendTradingError, TradingError } from "../trading/errors.js";
 import { previewIpoApplication } from "../trading/preview.js";
 
@@ -261,7 +262,7 @@ const ipoIdParam = (value: unknown) => {
 };
 
 // Body: { lots, bid_price? }. bid_price defaults to the top of the band.
-ipoRouter.post("/applyForIpo/:id", requireMarketOpen, async (req, res) => {
+ipoRouter.post("/applyForIpo/:id", requireOnboarded, requireMarketOpen, async (req, res) => {
 	try {
 		const lots = Number(req.body?.lots);
 		if (!Number.isInteger(lots) || lots <= 0) {

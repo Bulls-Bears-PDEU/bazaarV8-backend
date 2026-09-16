@@ -128,6 +128,8 @@ export const initDB = async () => {
 	await migrateTrading();
 	await migrateWatchlistsAndAlerts();
 	await migrateIpoApplications();
+	await migrateNewsImpacts();
+	await migrateUserProfiles();
 
 	// Indexes for faster search and retrieval
 	await sql`
@@ -1483,6 +1485,89 @@ const migrateStartingPrice = async () => {
     CREATE TRIGGER stocks_starting_price
     BEFORE INSERT ON stocks
     FOR EACH ROW EXECUTE FUNCTION bazaar_set_starting_price()
+    `;
+};
+
+/**
+ * News moves prices over a chosen time: each story has a default duration and
+ * each affected stock may override it (affected_stocks entries become
+ * {"impact_pct", "duration_seconds"} keyed by stock id; the older
+ * {"SYMBOL": pct} form is still read).
+ *
+ * first_released_at marks that a story has gone out and its impact has been
+ * applied, which happens exactly once: hiding and re-releasing it does not move
+ * prices again, and the scheduler never re-releases a hidden story.
+ */
+/**
+ * First-login onboarding and profile photos.
+ *
+ * users.onboarded_at is stamped when a player confirms their name (and
+ * optionally a photo) after approval; trading waits for it. Accounts that
+ * already existed when the column arrived keep playing without the dialog, so
+ * the backfill only runs the one time the column is created.
+ *
+ * Photos live in user_avatars as small WebP/PNG/JPEG bytes and are served from
+ * /users/avatar/:id, so users.image (which the leaderboard sends every two
+ * seconds) stays a short URL.
+ */
+const migrateUserProfiles = async () => {
+	const existing = await sql`
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'users' AND column_name = 'onboarded_at'
+    `;
+	if (existing.length === 0) {
+		await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarded_at TIMESTAMPTZ`;
+		await sql`UPDATE users SET onboarded_at = NOW() WHERE role <> 'pending'`;
+	}
+	await sql`
+    CREATE TABLE IF NOT EXISTS user_avatars (
+        user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        content_type VARCHAR(20) NOT NULL,
+        data BYTEA NOT NULL,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`;
+	await sql`
+    CREATE INDEX IF NOT EXISTS users_created_at_idx ON users ("createdAt" DESC)
+    `;
+	// Every god-mode action an organiser takes on someone else's account. The
+	// names are copied in rather than joined: the point of the trail is to still
+	// read correctly after an account is deleted, and ON DELETE SET NULL keeps
+	// the row when it is.
+	await sql`
+    CREATE TABLE IF NOT EXISTS admin_actions (
+        id BIGSERIAL PRIMARY KEY,
+        admin_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+        admin_name TEXT NOT NULL,
+        action VARCHAR(40) NOT NULL,
+        target_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+        target_user_name TEXT,
+        summary TEXT NOT NULL,
+        details JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+	await sql`
+    CREATE INDEX IF NOT EXISTS admin_actions_created_idx ON admin_actions (created_at DESC)
+    `;
+	await sql`
+    CREATE INDEX IF NOT EXISTS admin_actions_target_idx ON admin_actions (target_user_id, created_at DESC)
+    `;
+};
+
+const migrateNewsImpacts = async () => {
+	await sql`
+    ALTER TABLE news
+    ADD COLUMN IF NOT EXISTS impact_duration_seconds INTEGER NOT NULL DEFAULT 60
+    `;
+	await sql`ALTER TABLE news ADD COLUMN IF NOT EXISTS first_released_at TIMESTAMP`;
+	// Released before this column existed: already out, never apply it again.
+	await sql`
+    UPDATE news SET first_released_at = release_at
+    WHERE is_released AND first_released_at IS NULL
+    `;
+	// Updating a story without impacts once wrote a JSON null over them.
+	await sql`
+    UPDATE news SET affected_stocks = '{}'::jsonb
+    WHERE jsonb_typeof(affected_stocks) IS DISTINCT FROM 'object'
     `;
 };
 

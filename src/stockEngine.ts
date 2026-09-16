@@ -11,11 +11,11 @@
  *   - correlated moves: a market factor and a sector factor, so the index and
  *     each sector move together the way they do on a real exchange
  *   - volatility regimes: each stock drifts between calm and busy spells
- *   - admin sentiment: a repricing when it changes, then a drift, both measured
- *     in standard deviations and eased in over a couple of minutes instead of
- *     kinking every chart at once
- *   - news: a percentage move priced in over the following minute, with a
- *     burst of volatility after it
+ *   - admin sentiment: a one-way repricing when it changes, then a drift while
+ *     it stands, both measured in standard deviations and eased in over a
+ *     couple of minutes instead of kinking every chart at once
+ *   - news: a percentage move per stock, priced in front-loaded over a
+ *     duration the admin picks, with a burst of volatility after it
  *
  * The engine keeps no clock of its own: the market trades whenever an admin
  * has it open, and stands still while it is paused.
@@ -23,6 +23,7 @@
 
 import config from "./config/config.js";
 import { getMarketState } from "./controller/market.js";
+import type { NewsImpactRelease } from "./controller/news.js";
 import sql from "./database/database.js";
 import eventEmitter from "./eventEmitter.js";
 import { computeIndexSnapshot, sinceStart } from "./marketIndex.js";
@@ -73,25 +74,37 @@ const ANNUAL_DRIFT = 0.12;
 // Sentiment works in two parts, both measured in each stock's own hourly
 // standard deviations so it shows on calm and volatile stocks alike.
 //
-// A change of sentiment is first repriced: every stock moves this many hourly
-// sigmas as the new sentiment eases in (about 0.7% for a typical large cap,
-// twice that for a flip from bearish to bullish). A drift alone grows with
-// time while the noise grows with its square root, so it would take the best
-// part of an hour to show; the repricing is what makes the market react.
-// A few minutes into a bullish market about nine stocks in ten are up.
-const SENTIMENT_REPRICE_SIGMAS = 0.3;
-// Then it keeps tilting every stock by this many hourly sigmas per hour, so
-// the trend carries on: an hour in, about nine stocks in ten are still up and
-// nine hours of it adds about 20% to a typical large cap.
-const SENTIMENT_SIGMAS_PER_HOUR = 1;
+// A change of sentiment is first repriced: every stock gaps this many hourly
+// sigmas in the new sentiment's direction as it eases in, two thirds of it
+// within a minute. This is what makes a boom or a crash read as an event: a
+// drift alone grows with time while the noise grows with its square root, so on
+// its own it would take the best part of an hour to show above the noise. At 2,
+// a typical large cap is repriced about 5%, a calm name 3% and a volatile one
+// 9% -- against about 0.7% of noise over five minutes, so the whole board moves
+// together and nobody mistakes it for a quiet afternoon.
+//
+// The repricing is one-way: neutral owes none, so turning the tilt off stops
+// the trend and leaves the move already made standing, rather than handing it
+// back. Toggling in and out of a sentiment therefore ratchets prices, which is
+// an admin holding the dial, not something a player can do.
+const SENTIMENT_REPRICE_SIGMAS = 2;
+// While a sentiment stands it keeps tilting every stock by this many hourly
+// sigmas per hour, so the trend carries on rather than stopping where the
+// repricing left off: a large cap is about 2% into a boom after a minute, 5%
+// after five and 18% after an hour. This is the dial for how far a boom or a
+// crash carries; the one above is how hard it lands. Left on for a whole nine
+// hour session it compounds well past any sensible price, so it is meant to be
+// switched back once the move has landed.
+const SENTIMENT_SIGMAS_PER_HOUR = 5;
 const SENTIMENT_DIRECTION: Record<MarketSentiment, number> = {
 	bullish: 1,
 	bearish: -1,
 	neutral: 0,
 };
 // Time constant of the ease into a new sentiment, in ticks: two thirds of the
-// repricing lands in the first minute and 95% within three.
-const SENTIMENT_EASE_TICKS = 60;
+// repricing lands within two minutes and 95% within six. Long enough that a
+// boom builds on the chart instead of gapping in one candle.
+const SENTIMENT_EASE_TICKS = 120;
 
 // How each stock's variance splits between the whole market, its sector and
 // itself. Two stocks in one sector correlate at just under 0.5 and in
@@ -113,12 +126,13 @@ const REGIME_REVERSION = Math.LN2 / REGIME_HALF_LIFE_TICKS;
 const REGIME_SHOCK = REGIME_SPREAD * Math.sqrt(1 - (1 - REGIME_REVERSION) ** 2);
 const REGIME_MEAN = -(REGIME_SPREAD ** 2);
 
-// News impacts are percentages: {"RELIANCE": 4} moves Reliance up 4%. The move
-// is priced in with this time constant in ticks, so 95% of it lands within
-// 45 seconds, and it doubles the stock's volatility, which then fades with the
-// regime half-life.
-const NEWS_ABSORB_TICKS = 15;
-const NEWS_ABSORB_RATE = 1 - Math.exp(-1 / NEWS_ABSORB_TICKS);
+// News impacts are percentages: +4 moves a stock up 4%, on top of whatever the
+// market does meanwhile. The move is priced in over the impact's duration along
+// a front-loaded curve, the way a market reacts to a headline: about 65% lands
+// in the first quarter of the duration, 88% by half way and all of it by the
+// end. A new story also doubles the stock's volatility, which then fades with
+// the regime half-life.
+const NEWS_CURVE_STEEPNESS = 4;
 const NEWS_VOLATILITY_KICK = Math.LN2;
 const MAX_NEWS_IMPACT_PCT = 50;
 
@@ -170,6 +184,13 @@ const normalizeVolatility = (value: number) => {
 	return clamp(sigma, MIN_VOLATILITY, MAX_VOLATILITY);
 };
 
+/** Share of a news move priced in after `fraction` of its duration, 0 to 1. */
+const newsProgress = (fraction: number) =>
+	fraction >= 1
+		? 1
+		: (1 - Math.exp(-NEWS_CURVE_STEEPNESS * fraction)) /
+			(1 - Math.exp(-NEWS_CURVE_STEEPNESS));
+
 const nextRegime = (logRegime: number) =>
 	REGIME_MEAN +
 	(logRegime - REGIME_MEAN) * (1 - REGIME_REVERSION) +
@@ -190,14 +211,23 @@ type SimulatedStock = {
 	startingPrice: number | null;
 };
 
+/** One story's move on one stock, being priced in. */
+type NewsEffect = {
+	newsId: number;
+	// The whole move, in log price.
+	logMove: number;
+	durationTicks: number;
+	elapsedTicks: number;
+};
+
 type LiveStockState = {
 	// Unrounded, so moves smaller than a paisa still add up.
 	logPrice: number;
 	// The last published price, rounded to the paisa.
 	price: number;
 	logRegime: number;
-	// Log move from released news still to be priced in.
-	pendingNews: number;
+	// Released news still being priced in.
+	newsEffects: NewsEffect[];
 	// The candle being built; null while the market is paused.
 	candle: Candle | null;
 	// Start of the open candle, or of the last one when none is open (ms).
@@ -209,14 +239,21 @@ type LiveStockState = {
 
 const liveStockState = new Map<number, LiveStockState>();
 
-// Log moves from news released since the last tick, by stock id.
-const newsQueue = new Map<number, number>();
+// News released since the last tick, by stock id. Held here until the stock
+// next ticks, so a story released while the market is paused lands on reopen.
+const newsQueue = new Map<number, NewsEffect[]>();
 
 // Stocks with no price to start from, skipped until the stock list reloads.
 const unpricedStocks = new Set<number>();
 const warnedUnpricedStocks = new Set<number>();
 
 let sentimentLevel: number | null = null;
+// The setting the repricing has already been paid for, so each change is
+// priced once. Null until the first tick.
+let sentimentSetting: MarketSentiment | null = null;
+// Repricing owed to prices but not yet eased in, on the same scale as the
+// level. Worked off a little every tick and never handed back.
+let sentimentRepriceOwed = 0;
 // The index after the latest tick, for the API. Null until the first tick.
 let latestIndex: IndexSnapshot | null = null;
 // Wall clock at which the market was paused, for the resume log.
@@ -316,7 +353,7 @@ const initializeStocks = async (stocks: SimulatedStock[]) => {
 			logPrice: Math.log(price),
 			price: roundToPaisa(price),
 			logRegime: REGIME_MEAN,
-			pendingNews: 0,
+			newsEffects: [],
 			candle: null,
 			candleStart: Number(row.last_candle_ms ?? 0),
 			recentCandles: [],
@@ -342,78 +379,130 @@ const initializeStocks = async (stocks: SimulatedStock[]) => {
 // ---------------------------------------------------------------------------
 
 /**
- * Queues each affected stock's move for the next tick. Stocks may be given by
- * id or by symbol, and the impact is a percentage.
+ * Queues each affected stock's move for its next tick. The news controller has
+ * already resolved the stocks and durations; elapsedSeconds is non-zero only
+ * when resuming a story after a restart, and skips the part already priced in.
  */
-const queueNewsImpact = async (newsId: number) => {
-	const rows = await sql`SELECT affected_stocks FROM news WHERE id = ${newsId}`;
-	if (rows.length === 0) {
-		console.error(`No news found with ID ${newsId}`);
-		return;
-	}
-	const affected = rows[0].affected_stocks as Record<string, unknown> | null;
-	if (!affected) return;
-
-	const stocks = await getSimulatedStocks();
-	const symbolsById = new Map(stocks.map((stock) => [stock.id, stock.symbol]));
-	const idsBySymbol = new Map(
-		stocks.map((stock) => [stock.symbol.toUpperCase(), stock.id]),
+const queueNewsImpact = ({
+	id,
+	impacts,
+	elapsedSeconds,
+}: NewsImpactRelease) => {
+	const elapsedTicks = Math.max(
+		0,
+		Math.round((elapsedSeconds * 1000) / TICK_INTERVAL_MS),
 	);
-
-	for (const [key, value] of Object.entries(affected)) {
-		const identifier = key.trim();
-		const stockId = /^\d+$/.test(identifier)
-			? Number(identifier)
-			: idsBySymbol.get(identifier.toUpperCase());
-		const symbol = stockId === undefined ? undefined : symbolsById.get(stockId);
-		if (stockId === undefined || symbol === undefined) {
-			console.warn(`News ${newsId}: no stock "${key}", impact ignored`);
-			continue;
-		}
-		const impactPct = Number(value);
-		if (!Number.isFinite(impactPct)) {
-			console.warn(`News ${newsId}: impact for ${key} is not a number`);
-			continue;
-		}
-
+	for (const impact of impacts) {
+		const impactPct = Number(impact.impact_pct);
+		if (!Number.isFinite(impactPct) || impactPct === 0) continue;
 		const bounded = clamp(impactPct, -MAX_NEWS_IMPACT_PCT, MAX_NEWS_IMPACT_PCT);
-		newsQueue.set(
-			stockId,
-			(newsQueue.get(stockId) ?? 0) + Math.log1p(bounded / 100),
+		const durationTicks = Math.max(
+			1,
+			Math.round((impact.duration_seconds * 1000) / TICK_INTERVAL_MS),
 		);
-		console.log(
-			`News ${newsId}: ${symbol} ${bounded > 0 ? "+" : ""}${bounded}%`,
-		);
+		if (elapsedTicks >= durationTicks) continue;
+
+		const queued = newsQueue.get(impact.stock_id) ?? [];
+		queued.push({
+			newsId: id,
+			logMove: Math.log1p(bounded / 100),
+			durationTicks,
+			elapsedTicks,
+		});
+		newsQueue.set(impact.stock_id, queued);
+		if (elapsedTicks === 0) {
+			console.log(
+				`News ${id}: stock ${impact.stock_id} ${bounded > 0 ? "+" : ""}${bounded}% over ${impact.duration_seconds}s`,
+			);
+		}
 	}
 };
 
-eventEmitter.on("newsReleased", ({ id }: { id: number }) => {
-	queueNewsImpact(id).catch((error) => {
+eventEmitter.on("newsImpactReleased", (release: NewsImpactRelease) => {
+	try {
+		queueNewsImpact(release);
+	} catch (error) {
 		console.error("Error processing news release impact:", error);
-	});
+	}
 });
+
+/**
+ * This tick's share of every story being priced into a stock, in log price.
+ * Finished stories are dropped.
+ */
+const stepNews = (state: LiveStockState, stockId: number) => {
+	const queued = newsQueue.get(stockId);
+	if (queued) {
+		newsQueue.delete(stockId);
+		for (const effect of queued) {
+			state.newsEffects.push(effect);
+			// A fresh headline stirs the stock up; a resumed one already did.
+			if (effect.elapsedTicks === 0) state.logRegime += NEWS_VOLATILITY_KICK;
+		}
+	}
+	if (state.newsEffects.length === 0) return 0;
+
+	let move = 0;
+	for (const effect of state.newsEffects) {
+		const before = newsProgress(effect.elapsedTicks / effect.durationTicks);
+		effect.elapsedTicks += 1;
+		const after = newsProgress(effect.elapsedTicks / effect.durationTicks);
+		move += effect.logMove * (after - before);
+	}
+	state.newsEffects = state.newsEffects.filter(
+		(effect) => effect.elapsedTicks < effect.durationTicks,
+	);
+	return move;
+};
 
 // ---------------------------------------------------------------------------
 // The tick
 // ---------------------------------------------------------------------------
 
 /**
- * Moves the sentiment level a step towards the admin's setting and returns it
- * with the step taken, which is what gets repriced. On the first tick the
- * level starts at the setting with no step, since the stored prices already
- * reflect whatever sentiment the market had before a restart.
+ * Moves the sentiment level a step towards the admin's setting, and hands back
+ * that level along with the slice of repricing due this tick.
+ *
+ * A new setting owes a repricing in its own direction, which is then eased into
+ * prices and never taken back: bullish pops the market and bearish knocks it
+ * down, while neutral owes nothing, so turning the tilt off leaves the move
+ * already made standing instead of unwinding it. A flip pays the new
+ * direction's repricing from wherever the last one left prices, so bullish
+ * followed by bearish does return to about where it started.
+ *
+ * On the first tick the level starts at the setting and nothing is owed, since
+ * the stored prices already reflect whatever sentiment the market had before a
+ * restart.
  */
 const easeSentiment = (sentiment: MarketSentiment) => {
 	const target = SENTIMENT_DIRECTION[sentiment] ?? 0;
+
+	if (sentimentSetting === null) {
+		sentimentSetting = sentiment;
+	} else if (sentiment !== sentimentSetting) {
+		sentimentSetting = sentiment;
+		// Replaced, not added to: whatever the last sentiment had not finished
+		// repricing is dropped. Otherwise a boom called off half way keeps
+		// paying itself out for minutes after the market is back to neutral,
+		// which looks like the setting being ignored.
+		sentimentRepriceOwed = target;
+	}
+
 	const previous = sentimentLevel ?? target;
 	sentimentLevel = previous + (target - previous) / SENTIMENT_EASE_TICKS;
-	return { level: sentimentLevel, change: sentimentLevel - previous };
+
+	// The same exponential curve the level eases on, so a repricing lands two
+	// thirds within two minutes and 95% within six.
+	const reprice = sentimentRepriceOwed / SENTIMENT_EASE_TICKS;
+	sentimentRepriceOwed -= reprice;
+
+	return { level: sentimentLevel, reprice };
 };
 
 type TickShocks = {
 	market: number;
 	sector: number;
-	sentiment: { level: number; change: number };
+	sentiment: { level: number; reprice: number };
 };
 
 /** Moves one stock's price by one tick. */
@@ -424,17 +513,7 @@ const stepPrice = (
 ) => {
 	const sigma = stock.volatility;
 
-	const news = newsQueue.get(stock.id);
-	if (news !== undefined) {
-		newsQueue.delete(stock.id);
-		state.pendingNews += news;
-		state.logRegime += NEWS_VOLATILITY_KICK;
-	}
-	const newsMove = state.pendingNews * NEWS_ABSORB_RATE;
-	state.pendingNews =
-		Math.abs(state.pendingNews - newsMove) < 1e-6
-			? 0
-			: state.pendingNews - newsMove;
+	const newsMove = stepNews(state, stock.id);
 
 	state.logRegime = nextRegime(state.logRegime);
 
@@ -443,7 +522,7 @@ const stepPrice = (
 		ANNUAL_DRIFT * YEARS_PER_TICK +
 		(shocks.sentiment.level * SENTIMENT_SIGMAS_PER_HOUR * hourlySigma) /
 			TICKS_PER_HOUR +
-		shocks.sentiment.change * SENTIMENT_REPRICE_SIGMAS * hourlySigma;
+		shocks.sentiment.reprice * SENTIMENT_REPRICE_SIGMAS * hourlySigma;
 	const tickVolatility =
 		sigma * Math.exp(state.logRegime) * SQRT_YEARS_PER_TICK;
 	const shock =

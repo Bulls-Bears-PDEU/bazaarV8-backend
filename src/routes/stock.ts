@@ -30,10 +30,13 @@ stockRouter.get("/getAllStocks", async (_, res) => {
 	}
 });
 
+// ?limit=N returns only the most recent N candles, still oldest first.
 stockRouter.get("/getOHLCByStockId/:id", async (req, res) => {
 	const { id } = req.params;
 	try {
-		const ohlcData = await getOHLCByStockId(Number(id));
+		const limit =
+			req.query.limit === undefined ? undefined : Number(req.query.limit);
+		const ohlcData = await getOHLCByStockId(Number(id), limit);
 		res.json(ohlcData);
 	} catch (error) {
 		console.error("Error fetching OHLC data:", error);

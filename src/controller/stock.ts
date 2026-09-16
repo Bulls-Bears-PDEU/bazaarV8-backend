@@ -59,19 +59,41 @@ export const getStockById = async (id: number) => {
 	return (result[0] ? withSinceStart(result[0]) : undefined) as Stock;
 };
 
-/** Every candle, each with its close measured from the stock's starting price. */
-export const getOHLCByStockId = async (stockId: number) => {
+/**
+ * Candles, oldest first, each with its close measured from the stock's starting
+ * price. `limit` returns only the most recent that many, which is what a reader
+ * of the table wants: a stock accumulates a candle a second, so the unbounded
+ * answer is already thousands of rows an hour into a session.
+ */
+export const getOHLCByStockId = async (stockId: number, limit?: number) => {
+	const cap =
+		limit !== undefined && Number.isInteger(limit) && limit > 0
+			? Math.min(limit, 20_000)
+			: null;
 	const result = await sql`
+		WITH recent AS (
+			SELECT o.*
+			FROM stock_ohlc o
+			WHERE o.stock_id = ${stockId}
+			ORDER BY o.timestamp DESC
+			LIMIT ${cap}
+		)
 		SELECT o.*, s.starting_price::float8 AS stock_starting_price
-		FROM stock_ohlc o JOIN stocks s ON s.id = o.stock_id
-		WHERE o.stock_id = ${stockId}
+		FROM (
+			SELECT * FROM recent WHERE ${cap}::int IS NOT NULL
+			UNION ALL
+			SELECT * FROM stock_ohlc WHERE stock_id = ${stockId} AND ${cap}::int IS NULL
+		) o
+		JOIN stocks s ON s.id = o.stock_id
 		ORDER BY o.timestamp ASC
 	`;
 	return result.map(({ stock_starting_price, ...candle }) => ({
 		...candle,
 		change_pct:
-			sinceStart(Number(candle.close_price), stock_starting_price as number | null)
-				?.change_pct ?? null,
+			sinceStart(
+				Number(candle.close_price),
+				stock_starting_price as number | null,
+			)?.change_pct ?? null,
 	})) as unknown as (StockOHLC & { change_pct: number | null })[];
 };
 

@@ -35,6 +35,8 @@ export type TradingErrorCode =
 	| "ALLOTMENT_DONE"
 	| "ALLOTMENT_PENDING"
 	| "SYMBOL_TAKEN"
+	// A newly approved player has not confirmed their profile yet.
+	| "ONBOARDING_REQUIRED"
 	| "INTERNAL_ERROR";
 
 const STATUS_BY_CODE: Record<TradingErrorCode, number> = {
@@ -67,6 +69,7 @@ const STATUS_BY_CODE: Record<TradingErrorCode, number> = {
 	ALLOTMENT_DONE: 409,
 	ALLOTMENT_PENDING: 409,
 	SYMBOL_TAKEN: 409,
+	ONBOARDING_REQUIRED: 403,
 	INTERNAL_ERROR: 500,
 };
 

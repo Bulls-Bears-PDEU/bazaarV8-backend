@@ -4,6 +4,7 @@ import { admin, emailOTP } from "better-auth/plugins";
 import { sendEmail, sendPasswordResetEmail } from "./email.js";
 import config from "../config/config.js";
 import { pool } from "../database/pool.js";
+import { emitToAdmins } from "../realtime/emitter.js";
 
 /**
  * The reset link has to open the app the request came from, otherwise a player
@@ -79,6 +80,8 @@ export const auth = betterAuth({
     additionalFields: {
       cash_balance: { type: "number", defaultValue: 500000 },
       frozen_balance: { type: "number", defaultValue: 0 },
+      // Set by the server when a player finishes onboarding; never by the client.
+      onboarded_at: { type: "date", required: false, input: false },
     },
   },
   databaseHooks: {
@@ -95,6 +98,10 @@ export const auth = betterAuth({
               role: "pending",
             },
           };
+        },
+        // A new sign-up shows up in the admin panel's approval queue at once.
+        after: async () => {
+          emitToAdmins("usersChanged", {});
         },
       },
     },

@@ -14,6 +14,7 @@ import {
 import { getSessionUser } from "../lib/session.js";
 import requireApprovedUser from "../middleware/requireApprovedUser.js";
 import requireMarketOpen from "../middleware/requireMarketOpen.js";
+import requireOnboarded from "../middleware/requireOnboarded.js";
 import type { OrderStatus } from "../models/order.js";
 import { sendTradingError, TradingError } from "../trading/errors.js";
 import { getTradeContext, previewOrder } from "../trading/preview.js";
@@ -41,7 +42,7 @@ orderRouter.use(requireApprovedUser);
 // accepted from older callers, and then the position decides what it does.
 // Response: a fill ({ status: "filled", fills, position, ... }) or, for a limit
 // order that is not marketable, the resting order ({ status: "pending", ... }).
-orderRouter.post("/placeOrder", requireMarketOpen, async (req, res) => {
+orderRouter.post("/placeOrder", requireOnboarded, requireMarketOpen, async (req, res) => {
 	try {
 		const input = parsePlaceOrderInput(req.body);
 		const userId = getSessionUser(res).id;
@@ -100,7 +101,7 @@ orderRouter.post("/previewOrder", async (req, res) => {
 });
 
 // Body: { quantity?, limit_price? }. Limit orders only.
-orderRouter.patch("/modifyOrder/:id", requireMarketOpen, async (req, res) => {
+orderRouter.patch("/modifyOrder/:id", requireOnboarded, requireMarketOpen, async (req, res) => {
 	try {
 		const orderId = optionalId(req.params.id);
 		if (!orderId) {
