@@ -1,7 +1,7 @@
 import sql from "../database/database.js";
 import { emitToAdmins, emitToUser, onlineUserIds } from "../realtime/emitter.js";
 import { TradingError } from "../trading/errors.js";
-import { getRankForUser } from "./leaderboard.js";
+import { broadcastLeaderboard, getRankForUser } from "./leaderboard.js";
 import { getOrderHistory } from "./orders.js";
 import { getPortfolio, STARTING_CAPITAL } from "./portfolio.js";
 import { normalizeName } from "./profile.js";
@@ -34,6 +34,7 @@ export type AdminUserRow = {
 	net_worth: number;
 	pnl: number;
 	online: boolean;
+	hidden_from_leaderboard: boolean;
 };
 
 export type ListUsersQuery = {
@@ -93,6 +94,7 @@ const toRow = (row: Record<string, unknown>, online: Set<string>): AdminUserRow 
 		net_worth: netWorth,
 		pnl: Math.round((netWorth - STARTING_CAPITAL) * 100) / 100,
 		online: online.has(String(row.id)),
+		hidden_from_leaderboard: Boolean(row.hidden_from_leaderboard),
 	};
 };
 
@@ -111,6 +113,7 @@ export const listUsers = async (query: ListUsersQuery) => {
 				u.id, u.name, u.email, u.image, u.role, u.banned,
 				u."banReason" AS ban_reason, u."banExpires" AS ban_expires,
 				u."createdAt" AS created_at, u.onboarded_at, u."emailVerified" AS email_verified,
+				u.hidden_from_leaderboard,
 				u.cash_balance::float8 AS cash_balance,
 				(u.cash_balance + u.frozen_balance + COALESCE(holdings.value, 0))::float8 AS net_worth,
 				(COALESCE(u.banned, FALSE) AND (u."banExpires" IS NULL OR u."banExpires" > NOW())) AS is_banned
@@ -212,6 +215,7 @@ export const getUserDetail = async (userId: string) => {
 			u.id, u.name, u.email, u.image, u.role, u.banned,
 			u."banReason" AS ban_reason, u."banExpires" AS ban_expires,
 			u."createdAt" AS created_at, u.onboarded_at, u."emailVerified" AS email_verified,
+			u.hidden_from_leaderboard,
 			u.cash_balance::float8 AS cash_balance, 0::float8 AS net_worth,
 			(SELECT MAX(s."updatedAt") FROM session s WHERE s."userId" = u.id) AS last_session_at
 		FROM users u
@@ -251,7 +255,7 @@ export const getUserDetail = async (userId: string) => {
 };
 
 /**
- * Name, photo removal and cash, straight in the database. Role changes and
+ * Name, photo removal, cash and leaderboard visibility, straight in the database. Role changes and
  * bans go through Better Auth (see the routes) so sessions are revoked too.
  */
 export const updateUserAsAdmin = async (userId: string, body: unknown) => {
@@ -266,7 +270,14 @@ export const updateUserAsAdmin = async (userId: string, body: unknown) => {
 		}
 		cash = Math.round(cash * 100) / 100;
 	}
-	if (name === null && !removeAvatar && cash === null) {
+	let hidden: boolean | null = null;
+	if (input.hidden_from_leaderboard !== undefined) {
+		if (typeof input.hidden_from_leaderboard !== "boolean") {
+			throw new TradingError("INVALID_INPUT", "hidden_from_leaderboard must be true or false.");
+		}
+		hidden = input.hidden_from_leaderboard;
+	}
+	if (name === null && !removeAvatar && cash === null && hidden === null) {
 		throw new TradingError("INVALID_INPUT", "Nothing to update.");
 	}
 
@@ -279,6 +290,7 @@ export const updateUserAsAdmin = async (userId: string, body: unknown) => {
 			name = COALESCE(${name}, name),
 			image = CASE WHEN ${removeAvatar}::boolean THEN NULL ELSE image END,
 			cash_balance = COALESCE(${cash}::numeric, cash_balance),
+			hidden_from_leaderboard = COALESCE(${hidden}::boolean, hidden_from_leaderboard),
 			"updatedAt" = NOW()
 		WHERE id = ${userId}
 		RETURNING id
@@ -290,5 +302,7 @@ export const updateUserAsAdmin = async (userId: string, body: unknown) => {
 	if (name !== null || removeAvatar) emitToUser(userId, "profileUpdated", {});
 	// The player's balance and live portfolio refresh on this.
 	if (cash !== null) emitToUser(userId, "walletUpdate", {});
+	// Ranks shift for everyone when a player joins or leaves the table.
+	if (hidden !== null) await broadcastLeaderboard();
 	emitToAdmins("usersChanged", { id: userId });
 };

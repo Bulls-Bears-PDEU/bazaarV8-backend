@@ -1,13 +1,15 @@
-import { Router } from "express";
+import express, { Router } from "express";
 
 import {
 	addIpo,
 	deleteIpo,
 	getAllIpos,
 	getIpoById,
+	parseNewIpo,
 	updateIpo,
 	updateIpoStatus,
 } from "../controller/ipo.js";
+import { getIpoLogo, removeIpoLogo, setIpoLogo } from "../controller/ipoLogos.js";
 import {
 	applyForIpo,
 	getIpoApplicationsAdmin,
@@ -17,6 +19,7 @@ import {
 } from "../controller/ipoApplications.js";
 import type { IpoStatus } from "../models/ipo.js";
 import { getSessionUser } from "../lib/session.js";
+import { IMAGE_UPLOAD_MAX_BYTES, IMAGE_UPLOAD_TYPES } from "../lib/images.js";
 import requireAdmin from "../middleware/requireAdmin.js";
 import requireApprovedUser from "../middleware/requireApprovedUser.js";
 import requireMarketOpen from "../middleware/requireMarketOpen.js";
@@ -25,6 +28,26 @@ import { sendTradingError, TradingError } from "../trading/errors.js";
 import { previewIpoApplication } from "../trading/preview.js";
 
 const ipoRouter = Router();
+
+// Registered before the guard below, as stock logos are: an <img> on another
+// origin cannot be relied on to carry a session. Cached for good: the URL
+// carries a version, so a new logo is a new URL.
+ipoRouter.get("/logo/:id", async (req, res) => {
+	try {
+		const logo = await getIpoLogo(Number(req.params.id));
+		if (!logo) return res.status(404).end();
+		res.set({
+			"Content-Type": logo.contentType,
+			"Cache-Control": "public, max-age=31536000, immutable",
+			"Last-Modified": logo.updatedAt.toUTCString(),
+			"X-Content-Type-Options": "nosniff",
+		});
+		res.send(logo.data);
+	} catch (error) {
+		console.error("Error serving IPO logo:", error);
+		res.status(500).end();
+	}
+});
 
 ipoRouter.use(requireApprovedUser);
 
@@ -152,45 +175,53 @@ ipoRouter.get("/getIpoByIdAdmin/:id", requireAdmin, async (req, res) => {
 	}
 });
 
+// Fields may be sent directly or inside ipoData. Answers { message, id }.
 ipoRouter.post("/addIpo", requireAdmin, async (req, res) => {
 	const payload = req.body?.ipoData ?? req.body;
-	const storeAsDormant = payload?.store_as_dormant === true;
-	const payloadWithDormantControl = {
-		...payload,
-		status: payload?.status ?? (storeAsDormant ? "dormant" : "upcoming"),
-		is_open_to_subscription: storeAsDormant
-			? false
-			: payload?.is_open_to_subscription,
-	};
-
-	if (
-		!payload?.name ||
-		!payload?.symbol ||
-		!payload?.open_date ||
-		!payload?.close_date ||
-		!payload?.allotment_date
-	) {
-		return res.status(400).json({
-			error:
-				"name, symbol, open_date, close_date, and allotment_date are required. You can send them directly or inside ipoData.",
-		});
-	}
-
 	try {
-		await addIpo(payloadWithDormantControl);
-		res.json({ message: "IPO added successfully" });
+		const ipo = parseNewIpo({
+			...payload,
+			status:
+				payload?.status ??
+				(payload?.store_as_dormant === true ? "dormant" : "upcoming"),
+		});
+		const id = await addIpo(ipo);
+		res.json({ message: "IPO added successfully", id });
 	} catch (error) {
-		console.error("Error adding IPO:", error);
-		res.status(500).json({ error: "Internal Server Error" });
+		sendTradingError(res, error);
 	}
 });
 
+// Body: the image's bytes (webp, png or jpeg). Re-encoded before it is stored.
+ipoRouter.put(
+	"/:id/logo",
+	requireAdmin,
+	express.raw({ type: [...IMAGE_UPLOAD_TYPES], limit: IMAGE_UPLOAD_MAX_BYTES }),
+	async (req, res) => {
+		try {
+			res.json(await setIpoLogo(ipoIdParam(req.params.id), req.body));
+		} catch (error) {
+			sendTradingError(res, error);
+		}
+	},
+);
+
+ipoRouter.delete("/:id/logo", requireAdmin, async (req, res) => {
+	try {
+		await removeIpoLogo(ipoIdParam(req.params.id));
+		res.status(204).end();
+	} catch (error) {
+		sendTradingError(res, error);
+	}
+});
+
+// Body: any of the fields addIpo takes, except status. Answers with the IPO.
 ipoRouter.put("/updateIpo/:id", requireAdmin, async (req, res) => {
-	const { id } = req.params;
 	const payload = req.body?.ipoData ?? req.body;
 	try {
-		await updateIpo(Number(id), payload);
-		res.json({ message: "IPO updated successfully" });
+		const id = ipoIdParam(req.params.id);
+		await updateIpo(id, payload);
+		res.json(await getIpoById(id, true));
 	} catch (error) {
 		sendTradingError(res, error);
 	}

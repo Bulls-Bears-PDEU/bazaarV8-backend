@@ -1,4 +1,54 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import sql from "./database.js";
+
+/**
+ * This file's own source, hashed. Any edit to a migration changes it, so the
+ * schema is re-applied exactly when there is something new to apply.
+ */
+const schemaVersion = () =>
+	createHash("sha256")
+		.update(readFileSync(fileURLToPath(import.meta.url)))
+		.digest("hex");
+
+const appliedSchemaVersion = async () => {
+	try {
+		const rows = await sql`SELECT version FROM schema_meta WHERE id = 1`;
+		return rows[0] ? String(rows[0].version) : null;
+	} catch (error) {
+		// 42P01: the table does not exist yet, on a fresh database.
+		if ((error as { code?: string })?.code === "42P01") return null;
+		throw error;
+	}
+};
+
+/**
+ * Applies the schema below, unless this exact version of it already ran.
+ *
+ * The database is a long way off (each statement is a few hundred ms) and
+ * there are over a hundred statements, so applying them every boot kept the
+ * server, and everything waiting on it like scheduled news, down for a minute
+ * or more after each restart. Delete the schema_meta row to force a re-run.
+ */
+export const initDB = async () => {
+	const version = schemaVersion();
+	if ((await appliedSchemaVersion()) === version) return;
+
+	const started = Date.now();
+	await applySchema();
+	await sql`
+    CREATE TABLE IF NOT EXISTS schema_meta (
+        id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+        version TEXT NOT NULL,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+	await sql`
+    INSERT INTO schema_meta (id, version) VALUES (1, ${version})
+    ON CONFLICT (id) DO UPDATE SET version = EXCLUDED.version, applied_at = NOW()
+    `;
+	console.info(`Schema applied in ${((Date.now() - started) / 1000).toFixed(1)}s.`);
+};
 
 /**
  * Creates and migrates every table the app owns. Better Auth owns `users`,
@@ -7,9 +57,9 @@ import sql from "./database.js";
  *
  * Awaited by server.ts before the HTTP server listens and before the stock
  * engine starts, so nothing can query a table that is not there yet.
- * Every statement is idempotent: this runs on every boot.
+ * Every statement is idempotent: this re-runs whenever this file changes.
  */
-export const initDB = async () => {
+const applySchema = async () => {
 	await sql`
     CREATE TABLE IF NOT EXISTS stocks (
         id SERIAL PRIMARY KEY,
@@ -1097,6 +1147,16 @@ const migrateIpoApplications = async () => {
     CREATE INDEX IF NOT EXISTS ipo_applications_user_idx ON ipo_applications (user_id, created_at DESC)
     `;
 
+	// An IPO's logo, stored like a stock's and copied to the stock on listing.
+	await sql`ALTER TABLE ipo ADD COLUMN IF NOT EXISTS logo_url TEXT`;
+	await sql`
+    CREATE TABLE IF NOT EXISTS ipo_logos (
+        ipo_id INTEGER PRIMARY KEY REFERENCES ipo(id) ON DELETE CASCADE,
+        content_type VARCHAR(20) NOT NULL,
+        data BYTEA NOT NULL,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`;
+
 	await sql`ALTER TABLE ipo ADD COLUMN IF NOT EXISTS allotment_price NUMERIC(15, 2)`;
 	await sql`ALTER TABLE ipo ADD COLUMN IF NOT EXISTS allotment_completed_at TIMESTAMP`;
 	await sql`
@@ -1400,6 +1460,17 @@ const migrateIpoApplications = async () => {
         INSERT INTO stock_ohlc (stock_id, open_price, high_price, low_price, close_price)
         VALUES (v_stock_id, v_listing_price, v_listing_price, v_listing_price, v_listing_price);
 
+        -- The IPO's logo becomes the stock's, at the URL stocks serve logos from.
+        INSERT INTO stock_logos (stock_id, content_type, data, updated_at)
+        SELECT v_stock_id, l.content_type, l.data, CURRENT_TIMESTAMP
+        FROM ipo_logos l WHERE l.ipo_id = p_ipo_id;
+        IF FOUND THEN
+            UPDATE stocks
+            SET logo_url = format('/stocks/logo/%s?v=%s', v_stock_id,
+                                  floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint)
+            WHERE id = v_stock_id;
+        END IF;
+
         -- Allotted shares at the allotment price (their cost basis); trading
         -- starts at the listing price, so the difference is the listing gain.
         WITH credited AS (
@@ -1547,6 +1618,11 @@ const migrateUserProfiles = async () => {
     `;
 	await sql`
     CREATE INDEX IF NOT EXISTS users_created_at_idx ON users ("createdAt" DESC)
+    `;
+	// Set by an organiser for test or house accounts: they keep playing but are
+	// left out of the ranking, as organisers are.
+	await sql`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS hidden_from_leaderboard BOOLEAN NOT NULL DEFAULT FALSE
     `;
 	// Every god-mode action an organiser takes on someone else's account. The
 	// names are copied in rather than joined: the point of the trail is to still

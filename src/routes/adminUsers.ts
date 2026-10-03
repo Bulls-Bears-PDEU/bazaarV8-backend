@@ -84,7 +84,7 @@ adminUsersRouter.get("/:id", async (req, res) => {
 	}
 });
 
-// Body: { name?, remove_avatar?, cash_balance? }.
+// Body: { name?, remove_avatar?, cash_balance?, hidden_from_leaderboard? }.
 adminUsersRouter.patch("/:id", async (req, res) => {
 	try {
 		await updateUserAsAdmin(idParam(req), req.body);

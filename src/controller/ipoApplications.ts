@@ -1,6 +1,6 @@
 import sql from "../database/database.js";
 import eventEmitter from "../eventEmitter.js";
-import { emitToUser } from "../realtime/emitter.js";
+import { emitToMarket, emitToUser } from "../realtime/emitter.js";
 
 /**
  * All money movement happens inside the bazaar_*_ipo functions (see
@@ -107,6 +107,10 @@ export const listIpo = async (ipoId: number, volatility?: number) => {
 		SELECT bazaar_list_ipo(${ipoId}, ${volatility ?? null}) AS result
 	`;
 	eventEmitter.emit("stocksChanged");
+	// The new stock appears in both apps' stock lists, and the IPO moves to
+	// "listed", without anyone reloading.
+	emitToMarket("stocksChanged", { id: rows[0].result?.stock_id });
+	emitToMarket("iposChanged", { id: ipoId });
 	await notifyApplicants(ipoId, "ipoApplicationUpdate");
 	return rows[0].result;
 };

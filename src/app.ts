@@ -157,16 +157,20 @@ export const startBackgroundJobs = async () => {
 	}, TICK_INTERVAL_MS);
 
 	// Releases scheduled news when its time comes, which starts its impact.
-	let releasingNews = false;
+	// Runs do not overlap, but a run that never settles (a database request
+	// left hanging) must not stop every release after it, so it is given up on
+	// after a while. Overlapping is safe anyway: releaseNews locks the row.
+	let releasingSince = 0;
 	setInterval(() => {
-		if (releasingNews) return;
-		releasingNews = true;
+		if (releasingSince && Date.now() - releasingSince < 30_000) return;
+		const started = Date.now();
+		releasingSince = started;
 		releaseDueNews()
 			.catch((err) => {
 				console.error("Error releasing scheduled news:", err);
 			})
 			.finally(() => {
-				releasingNews = false;
+				if (releasingSince === started) releasingSince = 0;
 			});
 	}, 2000);
 

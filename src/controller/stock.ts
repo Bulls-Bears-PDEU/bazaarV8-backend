@@ -1,11 +1,14 @@
 import sql from "../database/database.js";
 import eventEmitter from "../eventEmitter.js";
 import { sinceStart } from "../marketIndex.js";
+import { emitToMarket } from "../realtime/emitter.js";
 import type { Stock, StockOHLC } from "../models/stock.js";
 
-// Tells the stock engine to reload its cached stock list.
+// Tells the stock engine to reload its cached stock list, and both apps to
+// refetch theirs: a stock added, edited, locked or removed shows at once.
 const notifyStocksChanged = () => {
 	eventEmitter.emit("stocksChanged");
+	emitToMarket("stocksChanged", {});
 };
 
 /** Adds the move since the starting price, measured where players see it measured. */

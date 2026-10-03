@@ -5,8 +5,8 @@ import { emitToMarket } from "../realtime/emitter.js";
 import { STARTING_CAPITAL } from "./portfolio.js";
 
 /**
- * Net worth, marked to the live price, for every player (role 'user'; admins
- * and pending accounts are not ranked):
+ * Net worth, marked to the live price, for every player (role 'user'; admins,
+ * pending accounts and accounts an organiser hid are not ranked):
  *   cash + frozen + long volume * price + short (entry - price) * qty
  *
  * The old query summed average_price * volume: valued at cost rather than
@@ -29,7 +29,7 @@ const NET_WORTH_CTE = sql`
 		FROM users u
 		LEFT JOIN user_portfolios p ON p.user_id = u.id AND p.volume <> 0
 		LEFT JOIN stocks s ON s.id = p.stock_id
-		WHERE u.role = 'user'
+		WHERE u.role = 'user' AND NOT u.hidden_from_leaderboard
 		GROUP BY u.id, u.name, u.image, u.cash_balance, u.frozen_balance
 	),
 	ranked AS (
@@ -90,7 +90,7 @@ export const getLeaderboard = async (_: Request, res: Response) => {
 	}
 };
 
-/** The caller's rank. Null rank for admins, who are not ranked. */
+/** The caller's rank. Null rank for admins and hidden accounts, which are not ranked. */
 export const getMyRank = async (_: Request, res: Response) => {
 	try {
 		const rank = await getRankForUser(getSessionUser(res).id);
