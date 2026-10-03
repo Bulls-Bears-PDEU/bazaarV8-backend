@@ -5,7 +5,7 @@ import express from "express";
 import { Server } from "socket.io";
 import config from "./config/config.js";
 import { capturePortfolioSnapshots } from "./controller/analytics.js";
-import { broadcastLeaderboard } from "./controller/leaderboard.js";
+import { broadcastLeaderboard, LEADERBOARD_REFRESH_MS } from "./controller/leaderboard.js";
 import { getMarketState } from "./controller/market.js";
 import { releaseDueNews, resumeNewsImpacts } from "./controller/news.js";
 import sql from "./database/database.js";
@@ -193,11 +193,12 @@ export const startBackgroundJobs = async () => {
 		});
 	}, TICK_INTERVAL_MS);
 
+	// Every player ranked once, kept in memory for every board and rank read.
 	setInterval(() => {
 		broadcastLeaderboard().catch((err) => {
 			console.error("Error broadcasting leaderboard:", err);
 		});
-	}, 2000);
+	}, LEADERBOARD_REFRESH_MS);
 
 	// Equity-curve points for players who are online.
 	setInterval(() => {

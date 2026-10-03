@@ -35,6 +35,8 @@ export const emitToUser = (userId: string, event: string, payload: unknown) => {
 
 export const emitToMarket = (event: string, payload: unknown) => {
 	io?.to(ROOMS.market).emit(event, payload);
+	// Shared read caches drop what this event says has changed.
+	eventEmitter.emit("marketBroadcast", event);
 };
 
 export const emitToAdmins = (event: string, payload: unknown) => {

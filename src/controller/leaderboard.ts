@@ -38,8 +38,31 @@ const NET_WORTH_CTE = sql`
 	)
 `;
 
-export const getLeaderboardData = async () => {
-	const rows = await sql`
+export type Standing = {
+	id: string;
+	name: string;
+	image: string | null;
+	rank: number;
+	net_worth: number;
+	pnl: number;
+	total_profit: number;
+};
+
+type Board = { rows: Standing[]; byId: Map<string, Standing> };
+
+/**
+ * Every ranked player, worked out in one query and kept in memory until the
+ * next refresh. Ranking is the most expensive read in the game; done once per
+ * LEADERBOARD_REFRESH_MS, the board and each player's own rank are then free
+ * to serve however many players ask.
+ */
+export const LEADERBOARD_REFRESH_MS = 10_000;
+
+let board: Board | null = null;
+let refreshing: Promise<Board> | null = null;
+
+const loadBoard = async (): Promise<Board> => {
+	const rows = (await sql`
 		${NET_WORTH_CTE}
 		SELECT id, name, image, rank, net_worth,
 			-- Profit or loss against the cash every player starts with.
@@ -48,33 +71,56 @@ export const getLeaderboardData = async () => {
 			net_worth AS total_profit
 		FROM ranked
 		ORDER BY rank, name
-		LIMIT 10
-	`;
-	return rows;
+	`) as Standing[];
+	return { rows, byId: new Map(rows.map((row) => [row.id, row])) };
 };
 
-export const getRankForUser = async (userId: string) => {
-	const rows = await sql`
-		${NET_WORTH_CTE}
-		SELECT
-			r.rank, r.net_worth,
-			(SELECT count(*)::int FROM ranked) AS total_players
-		FROM ranked r
-		WHERE r.id = ${userId}
-	`;
-	return (rows[0] ?? null) as {
-		rank: number;
-		net_worth: number;
-		total_players: number;
-	} | null;
+const refreshBoard = () => {
+	refreshing ??= loadBoard()
+		.then((fresh) => {
+			board = fresh;
+			return fresh;
+		})
+		.finally(() => {
+			refreshing = null;
+		});
+	return refreshing;
 };
 
-// Approved players and admins only: this carries every leader's name and net
-// worth, so it must not reach pending or unauthenticated sockets.
+const currentBoard = async () => board ?? refreshBoard();
+
+export const getLeaderboardData = async () => (await currentBoard()).rows;
+
+/**
+ * Null for admins, hidden accounts and anyone approved since the last refresh.
+ * fresh re-ranks first, for a caller that has just changed balances itself.
+ */
+export const getRankForUser = async (
+	userId: string,
+	{ fresh = false } = {},
+) => {
+	const { rows, byId } = fresh ? await refreshBoard() : await currentBoard();
+	const standing = byId.get(userId);
+	return standing
+		? {
+				rank: standing.rank,
+				net_worth: standing.net_worth,
+				total_players: rows.length,
+			}
+		: null;
+};
+
+/**
+ * Re-ranks everyone and tells approved players and admins it changed. The
+ * signal carries no rows: the whole board is too big to push to every socket
+ * every few seconds, and only screens showing it (or a rank) fetch it again.
+ */
 export const broadcastLeaderboard = async () => {
 	try {
-		const data = await getLeaderboardData();
-		emitToMarket("leaderboard_update", data);
+		await refreshBoard();
+		emitToMarket("leaderboard_update", {
+			updated_at: new Date().toISOString(),
+		});
 	} catch (error) {
 		console.error("Error broadcasting leaderboard:", error);
 	}

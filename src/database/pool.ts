@@ -22,15 +22,29 @@ pg.types.setTypeParser(pg.types.builtins.NUMERIC, (value) =>
  */
 export const pool = new pg.Pool({
 	connectionString: config.TRADING_DATABASE_URL,
+	max: 15,
+	idleTimeoutMillis: 30_000,
+	connectionTimeoutMillis: 5_000,
+});
+
+/**
+ * Better Auth's own pool. Sign-ins and session lookups arrive in bursts (a
+ * room of players opening the app at once); on their own connections they can
+ * never queue an order fill behind them.
+ */
+export const authPool = new pg.Pool({
+	connectionString: config.TRADING_DATABASE_URL,
 	max: 10,
 	idleTimeoutMillis: 30_000,
 	connectionTimeoutMillis: 5_000,
 });
 
-pool.on("error", (err) => {
-	// An idle client dropped by the server must not crash the process.
-	console.error("Idle pg client error:", err);
-});
+for (const each of [pool, authPool]) {
+	each.on("error", (err) => {
+		// An idle client dropped by the server must not crash the process.
+		console.error("Idle pg client error:", err);
+	});
+}
 
 export type PoolClient = pg.PoolClient;
 

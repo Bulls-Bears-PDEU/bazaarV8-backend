@@ -6,11 +6,8 @@ import {
 	setMarketSentiment,
 	setTradingRules,
 } from "../controller/market.js";
-import {
-	getCurrentIndex,
-	getIndexHistory,
-	getMarketOverview,
-} from "../controller/marketOverview.js";
+import { getCurrentIndex } from "../controller/marketOverview.js";
+import { indexHistoryCache, marketOverviewCache } from "../lib/sharedReads.js";
 import requireAdmin from "../middleware/requireAdmin.js";
 import requireApprovedUser from "../middleware/requireApprovedUser.js";
 import {
@@ -37,7 +34,7 @@ marketRouter.get("/getMarketOverview", async (req, res) => {
 	const { candles } = req.query;
 
 	try {
-		const overview = await getMarketOverview(
+		const overview = await marketOverviewCache.get(
 			candles === undefined ? undefined : Number(candles),
 		);
 		res.json(overview);
@@ -63,10 +60,10 @@ marketRouter.get("/getIndexHistory", async (req, res) => {
 	try {
 		// basis=start measures from starting prices (players); the default
 		// measures from the window open (the admin overview).
-		const history = await getIndexHistory(
-			points === undefined ? undefined : Number(points),
-			basis === "start" ? "start" : "window",
-		);
+		const history = await indexHistoryCache.get({
+			points: points === undefined ? undefined : Number(points),
+			basis: basis === "start" ? "start" : "window",
+		});
 		res.json(history);
 	} catch (error) {
 		console.error("Error fetching index history:", error);

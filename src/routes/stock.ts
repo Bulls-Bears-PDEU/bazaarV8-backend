@@ -4,7 +4,6 @@ import {
 	addStock,
 	addStockOHLC,
 	getAllSectors,
-	getAllStocks,
 	getCurrentPrice,
 	getCurrentPriceForStocks,
 	getCurrentPricesForAllStocks,
@@ -19,6 +18,7 @@ import {
 	setStockLogo,
 } from "../controller/stockLogos.js";
 import { IMAGE_UPLOAD_MAX_BYTES, IMAGE_UPLOAD_TYPES } from "../lib/images.js";
+import { stocksCache } from "../lib/sharedReads.js";
 import requireAdmin from "../middleware/requireAdmin.js";
 import requireApprovedUser from "../middleware/requireApprovedUser.js";
 import { sendTradingError } from "../trading/errors.js";
@@ -52,7 +52,7 @@ stockRouter.use(requireApprovedUser);
 
 stockRouter.get("/getAllStocks", async (_, res) => {
 	try {
-		const stocks = await getAllStocks();
+		const stocks = await stocksCache.get(undefined);
 		res.json(stocks);
 	} catch (error) {
 		console.error("Error fetching stocks:", error);

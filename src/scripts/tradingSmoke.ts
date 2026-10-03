@@ -178,7 +178,7 @@ const run = async () => {
 	// Mark-to-market with an open short: portfolio and leaderboard must agree.
 	await sql`UPDATE stocks SET last_price = 85 WHERE id = ${stockId}`;
 	const portfolio = await getPortfolio(USER_ID);
-	const rank = await getRankForUser(USER_ID);
+	const rank = await getRankForUser(USER_ID, { fresh: true });
 	console.log("valuation with a 15-share short at 90, price 85");
 	// cash 9375 + frozen 675 + short P&L (90-85)*15 = 75
 	check("portfolio net worth", portfolio.totals.net_worth, 10_125);
@@ -321,7 +321,7 @@ const ipos = async () => {
 	check("B: refund 1000, 4000 stays frozen", await balances(USER_B), "6000/4000");
 	check("C: refunded in full", await balances(USER_C), "10000/0");
 	await checkFrozenReconciles();
-	check("net worth does not dip before listing", (await getRankForUser(USER_ID))?.net_worth, 10_000);
+	check("net worth does not dip before listing", (await getRankForUser(USER_ID, { fresh: true }))?.net_worth, 10_000);
 	check("allotting twice", await errorCode(() => runIpoAllotment(ipoId, 100)), "ALLOTMENT_DONE");
 
 	await updateIpoStatus(ipoId, "listed", undefined, 1);

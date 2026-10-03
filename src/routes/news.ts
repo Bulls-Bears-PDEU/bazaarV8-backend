@@ -3,7 +3,6 @@ import { type Response, Router } from "express";
 import {
 	addNews,
 	deleteNews,
-	getAllNews,
 	getAllNewsAdmin,
 	getNewsById,
 	hideNews,
@@ -12,6 +11,7 @@ import {
 	updateNews,
 } from "../controller/news.js";
 import { getSessionUser } from "../lib/session.js";
+import { newsCache } from "../lib/sharedReads.js";
 import requireAdmin from "../middleware/requireAdmin.js";
 import requireApprovedUser from "../middleware/requireApprovedUser.js";
 
@@ -37,7 +37,7 @@ const parseId = (value: string | string[]) => {
 
 newsRouter.get("/getAllNews", async (_, res) => {
 	try {
-		res.json(await getAllNews());
+		res.json(await newsCache.get(undefined));
 	} catch (error) {
 		sendError(res, error, "fetching news");
 	}

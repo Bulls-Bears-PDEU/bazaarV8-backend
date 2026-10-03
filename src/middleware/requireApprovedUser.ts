@@ -1,6 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
-import { fromNodeHeaders } from "better-auth/node";
-import { auth } from "../lib/auth.js";
+import { getRequestSession } from "../lib/requestSession.js";
 import { isBanned } from "../lib/session.js";
 
 const requireApprovedUser = async (
@@ -8,9 +7,7 @@ const requireApprovedUser = async (
 	res: Response,
 	next: NextFunction,
 ) => {
-	const session = await auth.api.getSession({
-		headers: fromNodeHeaders(req.headers),
-	});
+	const session = await getRequestSession(req, res);
 
 	if (!session) {
 		return res.status(401).json({ message: "Unauthorized: No session" });

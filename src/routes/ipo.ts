@@ -19,6 +19,7 @@ import {
 } from "../controller/ipoApplications.js";
 import type { IpoStatus } from "../models/ipo.js";
 import { getSessionUser } from "../lib/session.js";
+import { iposCache } from "../lib/sharedReads.js";
 import { IMAGE_UPLOAD_MAX_BYTES, IMAGE_UPLOAD_TYPES } from "../lib/images.js";
 import requireAdmin from "../middleware/requireAdmin.js";
 import requireApprovedUser from "../middleware/requireApprovedUser.js";
@@ -82,7 +83,7 @@ ipoRouter.get("/getAllIpos", async (req, res) => {
 	}
 
 	try {
-		const ipos = await getAllIpos({
+		const ipos = await iposCache.get({
 			status: status ? (String(status) as IpoStatus) : undefined,
 			sector: sector ? String(sector) : undefined,
 			symbol: symbol ? String(symbol) : undefined,

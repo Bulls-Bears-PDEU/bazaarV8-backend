@@ -1,22 +1,23 @@
 import type { NextFunction, Request, Response } from "express";
-import { auth } from "../lib/auth.js";
-import { fromNodeHeaders } from "better-auth/node";
-import { isBanned } from "../lib/session.js";
+import { getRequestSession } from "../lib/requestSession.js";
+import { isBanned, type SessionUser } from "../lib/session.js";
 
 const requireAdmin = async (
 	req: Request,
 	res: Response,
 	next: NextFunction,
 ) => {
-	const session = await auth.api.getSession({
-		headers: fromNodeHeaders(req.headers),
-	});
-	if (!session) {
+	// Usually requireApprovedUser has already looked the session up, with the
+	// same freshness rules; no need to do it twice.
+	const user =
+		(res.locals.user as SessionUser | undefined) ??
+		(await getRequestSession(req, res))?.user;
+	if (!user) {
 		return res.status(401).json({ message: "Unauthorized: No session" });
 	}
 
-	if (session.user.role === "admin" && !isBanned(session.user)) {
-		res.locals.user = session.user;
+	if (user.role === "admin" && !isBanned(user)) {
+		res.locals.user = user;
 		next();
 	} else {
 		res.status(403).json({ message: "Forbidden: Admins only" });

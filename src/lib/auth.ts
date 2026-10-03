@@ -3,7 +3,7 @@ import { betterAuth } from "better-auth";
 import { admin, emailOTP } from "better-auth/plugins";
 import { sendEmail, sendPasswordResetEmail } from "./email.js";
 import config from "../config/config.js";
-import { pool } from "../database/pool.js";
+import { authPool } from "../database/pool.js";
 import { emitToAdmins } from "../realtime/emitter.js";
 
 /**
@@ -20,11 +20,17 @@ const resetLinkBaseUrl = (request?: Request) => {
 };
 
 export const auth = betterAuth({
-  // Shares the trading pool, which also registers the NUMERIC type parser so
-  // cash_balance comes back as a number rather than a string.
-  database: pool,
+  // pool.ts also registers the NUMERIC type parser, so cash_balance comes back
+  // as a number rather than a string.
+  database: authPool,
   baseURL: config.BACKEND_URL,
   trustedOrigins: config.FRONTEND_ORIGINS,
+  session: {
+    // The session and user travel in a signed cookie for a minute, so most
+    // requests skip the database lookup. Writes still check the database: see
+    // getRequestSession.
+    cookieCache: { enabled: true, maxAge: 60 },
+  },
   emailAndPassword: {
     enabled: true,
     requireEmailVerification: true,
