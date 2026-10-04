@@ -172,8 +172,9 @@ stockRouter.put("/updateStock/:id", requireAdmin, async (req, res) => {
 stockRouter.post("/addStock", requireAdmin, async (req, res) => {
 	const { stockData, initPrice } = req.body;
 	try {
-		await addStock(stockData, initPrice);
-		res.json({ message: "Stock added successfully" });
+		// The id lets the admin panel upload the new stock's logo straight away.
+		const { id } = await addStock(stockData, initPrice);
+		res.json({ message: "Stock added successfully", id });
 	} catch (error) {
 		console.error("Error adding stock:", error);
 		res.status(500).json({ error: "Internal Server Error" });

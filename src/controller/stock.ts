@@ -162,6 +162,7 @@ export const addStock = async (
 			VALUES (${stockId}, ${initPrice}, ${initPrice}, ${initPrice}, ${initPrice}, ${timestamp})
 		`;
 	notifyStocksChanged();
+	return { id: Number(stockId) };
 };
 
 export const addStockOHLC = async (stockId: number, ohlcData: StockOHLC) => {
