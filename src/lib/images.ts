@@ -33,14 +33,22 @@ export type CompressedImage = {
 /**
  * Decodes, resizes and re-encodes to WebP.
  *
- * `cover` crops to fill the square (a face in an avatar); `contain` fits the
+ * `size` gives a square; `width` and `height` give a rectangle (an ad banner).
+ * `cover` crops to fill the box (a face in an avatar); `contain` fits the
  * whole image inside it on a transparent ground (a logo must never lose its
  * edges). WebP keeps transparency, which a logo needs and JPEG cannot hold.
  */
 export const compressImage = async (
 	input: Buffer,
-	options: { size: number; fit: "cover" | "contain"; quality?: number },
+	options: ({ size: number } | { width: number; height: number }) & {
+		fit: "cover" | "contain";
+		quality?: number;
+	},
 ): Promise<CompressedImage> => {
+	const [width, height] =
+		"size" in options
+			? [options.size, options.size]
+			: [options.width, options.height];
 	if (!Buffer.isBuffer(input) || input.length === 0) {
 		throw new TradingError("INVALID_INPUT", "Choose an image to upload.");
 	}
@@ -60,7 +68,7 @@ export const compressImage = async (
 			// Phone photos store their orientation separately; apply it before the
 			// metadata that carries it is dropped.
 			.rotate()
-			.resize(options.size, options.size, {
+			.resize(width, height, {
 				fit: options.fit,
 				withoutEnlargement: false,
 				background: { r: 0, g: 0, b: 0, alpha: 0 },

@@ -12,31 +12,40 @@ Bazaar is split across three repositories:
 
 ## How it works
 
-```text
-  Player app (:5174)        Admin panel (:5173)
-          │                         │
-          └──── REST + Socket.IO ───┘
-                (session cookie)
-                       │
-          ┌────────────▼────────────┐
-          │  Express + Socket.IO    │  :3000
-          │  Better Auth            │
-          ├─────────────────────────┤
-          │  Background jobs        │
-          │   price tick       1 s  │
-          │   limit fills    250 ms │
-          │   news release     2 s  │
-          │   leaderboard     10 s  │
-          │   equity snapshots 30 s │
-          └────────────┬────────────┘
-                       │
-               Postgres (Neon)
+```mermaid
+flowchart TB
+    player["Player app<br/>:5174"]
+    admin["Admin panel<br/>:5173"]
+
+    subgraph backend["bazaarV8-backend :3000"]
+        api["Express REST API<br/>+ Better Auth"]
+        io["Socket.IO"]
+        subgraph jobs["Background jobs"]
+            tick["Price tick · 1 s"]
+            fills["Limit fills and alerts · 250 ms"]
+            news["News release · 2 s"]
+            board["Leaderboard · 10 s"]
+            snaps["Equity snapshots · 30 s"]
+        end
+    end
+
+    db[("Postgres (Neon)")]
+
+    player -- "REST + session cookie" --> api
+    admin -- "REST + session cookie" --> api
+    io -- "live events" --> player
+    io -- "live events" --> admin
+    api --> db
+    jobs --> db
+    jobs --> io
+    api --> io
 ```
 
 - **Price engine** (`src/stockEngine.ts`). Every second each stock moves by geometric Brownian motion, with stocks in the same sector moving together. Admin news adds directed moves to the stocks it names, and market sentiment (bullish, bearish, neutral) reprices and tilts the whole board. The maths and tuning are documented in [docs/stockEngine.md](docs/stockEngine.md).
 - **Trading engine** (`src/trading/`). Market orders fill at the live price. Limit orders rest, with cash reserved, until a tick crosses them, and are then settled by a separate 250 ms loop so a burst of fills never delays prices. Positions are signed: Buy and Sell manage a long, Short and Cover manage a short against a margin set by the organisers. A position is closed before it can flip sides.
 - **Everything is computed here.** Portfolio values, P&L, ranks, previews and the leaderboard are calculated on the server and sent to the apps, which only display them. This keeps players from changing their numbers in the browser.
 - **Auth** uses [Better Auth](https://www.better-auth.com) with email and password, email verification codes and password resets sent through [Resend](https://resend.com). New accounts start as `pending` and can't use the API until an organiser approves them.
+- **Sponsor ads** (`src/controller/ads.ts`). Organisers upload one ad per slot the player app reserves; see [Sponsor ads](#sponsor-ads) below.
 - **Schema** is created and migrated on startup by `initDB()` in `src/database/schema.ts`. A hash in `schema_meta` lets startup skip the migration when nothing has changed.
 
 ## Getting started
@@ -99,7 +108,7 @@ Never commit `.env`; it is already in `.gitignore`.
 
 ## API
 
-All routes except auth, logos and avatars require an approved user's session cookie. Routes marked **admin** also require the `admin` role.
+All routes except auth, logos, avatars and ad images require an approved user's session cookie. Routes marked **admin** also require the `admin` role.
 
 | Prefix | Covers |
 | --- | --- |
@@ -116,8 +125,55 @@ All routes except auth, logos and avatars require an approved user's session coo
 | `/users` | Avatars, update own profile; **admin**: approve a user |
 | `/admin/users` | **admin**: list, search, stats, edit and bulk-update users |
 | `/admin/god` | **admin**: adjust a player's cash and positions, flatten, cancel orders, reset, and the action log |
+| `/ads` | Live ads and the show/hide switch, ad images; **admin**: every slot, upload, edit and remove ads, hide all ads |
 
 Placing orders and applying for IPOs is refused while the market is paused and until a newly approved player has finished onboarding.
+
+## Sponsor ads
+
+The player app reserves fixed spaces for sponsor ads. Each space is a **slot** with a name and a standard size, defined in `AD_SLOTS` in `src/controller/ads.ts`:
+
+| Slot | Where | Size |
+| --- | --- | --- |
+| `news-top` | News article, above the story | 728 × 90 |
+| `news-in-article` | News article, inside the story | 728 × 90 |
+| `news-sidebar-1` | News article sidebar, upper | 300 × 250 |
+| `news-sidebar-2` | News article sidebar, lower | 300 × 250 |
+| `news-list` | News page sidebar | 300 × 250 |
+| `market-paused` | Screen shown while the market is paused | 300 × 250 |
+
+Each slot holds at most one ad: an image, a sponsor name (used as alt text), an optional link, and a live/paused flag. Images are stored in the database like stock logos. Whatever is uploaded is re-encoded to WebP at twice the slot size, without cropping. One switch, stored in `ad_settings`, hides every ad at once. While it is off, players see no ads and no empty ad spaces.
+
+| Method and path | Who | What it does |
+| --- | --- | --- |
+| `GET /ads/image/:slot` | Public | The slot's image. The URL carries a version, so it is cached for good |
+| `GET /ads/getAds` | Approved users | `{ enabled, ads }`: live ads only |
+| `GET /ads/getAdsAdmin` | Admin | `{ enabled, slots }`: every slot with its size and its ad, if any |
+| `PUT /ads/:slot/image` | Admin | Upload or replace the image. The body is the raw PNG, JPEG or WebP, up to 8 MB. Uploading to an empty slot creates its ad |
+| `PATCH /ads/:slot` | Admin | Change any of `sponsor`, `link_url` (http or https only) and `is_active` |
+| `DELETE /ads/:slot` | Admin | Remove the ad; the slot shows its placeholder again |
+| `PATCH /ads/setAdsEnabled` | Admin | `{ enabled }`: show or hide every ad |
+
+Every change broadcasts `adsChanged`, so open apps refetch straight away:
+
+```mermaid
+sequenceDiagram
+    actor Organiser
+    participant Admin as Admin panel
+    participant API as Backend
+    participant DB as Postgres
+    participant Player as Player app
+
+    Organiser->>Admin: Drop an image on a slot
+    Admin->>API: PUT /ads/news-top/image
+    API->>API: Re-encode to WebP at 2× slot size
+    API->>DB: Upsert into ads
+    API-->>Player: adsChanged (socket)
+    API-->>Admin: adsChanged (socket)
+    Player->>API: GET /ads/getAds
+    API-->>Player: { enabled, ads }
+    Player->>API: GET /ads/image/news-top?v=…
+```
 
 ## Realtime
 
@@ -126,7 +182,7 @@ Socket.IO shares the HTTP port and authenticates with the same session cookie. O
 | Room | Who | Main events |
 | --- | --- | --- |
 | `user:<id>` | Every user | `portfolioTick`, `walletUpdate`, `orderPlaced`, `orderFilled`, `orderModified`, `orderCancelled`, `orderRejected`, `priceAlertTriggered`, `ipoApplicationUpdate`, `profileUpdated` |
-| `market` | Approved users and admins | `marketTick`, `indexTick`, `leaderboard_update`, `newsReleased`, `newsChanged`, `stocksChanged`, `iposChanged` |
+| `market` | Approved users and admins | `marketTick`, `indexTick`, `leaderboard_update`, `newsReleased`, `newsChanged`, `stocksChanged`, `iposChanged`, `adsChanged` |
 | `lobby` | Pending users | `marketStateUpdate` only |
 | `admins` | Admins | `stockPriceUpdate`, `usersChanged`, `newsChanged`, `adminActionLogged` |
 

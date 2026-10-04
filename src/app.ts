@@ -5,7 +5,10 @@ import express from "express";
 import { Server } from "socket.io";
 import config from "./config/config.js";
 import { capturePortfolioSnapshots } from "./controller/analytics.js";
-import { broadcastLeaderboard, LEADERBOARD_REFRESH_MS } from "./controller/leaderboard.js";
+import {
+	broadcastLeaderboard,
+	LEADERBOARD_REFRESH_MS,
+} from "./controller/leaderboard.js";
 import { getMarketState } from "./controller/market.js";
 import { releaseDueNews, resumeNewsImpacts } from "./controller/news.js";
 import sql from "./database/database.js";
@@ -16,6 +19,7 @@ import type { MarketState } from "./models/market.js";
 import { emitMarketState, ROOMS, registerIo } from "./realtime/emitter.js";
 import { publishLivePortfolios } from "./realtime/livePortfolio.js";
 import adminUsersRouter from "./routes/adminUsers.js";
+import adRouter from "./routes/ads.js";
 import alertRouter from "./routes/alerts.js";
 import godModeRouter from "./routes/godMode.js";
 import ipoRouter from "./routes/ipo.js";
@@ -97,6 +101,7 @@ app.use("/orders", orderRouter);
 app.use("/portfolio", portfolioRouter);
 app.use("/watchlists", watchlistRouter);
 app.use("/alerts", alertRouter);
+app.use("/ads", adRouter);
 
 const httpServer = createServer(app);
 const io = new Server(httpServer, {

@@ -5,6 +5,7 @@
  * dropped the moment the change is broadcast.
  */
 
+import { getActiveAds } from "../controller/ads.js";
 import { getAllIpos } from "../controller/ipo.js";
 import {
 	getIndexHistory,
@@ -43,6 +44,8 @@ export const iposCache = sharedCache(
 
 export const stocksCache = sharedCache(LIST_TTL_MS, () => getAllStocks());
 
+export const adsCache = sharedCache(LIST_TTL_MS, () => getActiveAds());
+
 // The overview also carries the market state, the latest news and the IPOs.
 eventEmitter.on("marketStateChanged", () => marketOverviewCache.clear());
 
@@ -60,6 +63,9 @@ eventEmitter.on("marketBroadcast", (event: string) => {
 		case "stocksChanged":
 			stocksCache.clear();
 			marketOverviewCache.clear();
+			break;
+		case "adsChanged":
+			adsCache.clear();
 			break;
 	}
 });

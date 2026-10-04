@@ -47,7 +47,9 @@ export const initDB = async () => {
     INSERT INTO schema_meta (id, version) VALUES (1, ${version})
     ON CONFLICT (id) DO UPDATE SET version = EXCLUDED.version, applied_at = NOW()
     `;
-	console.info(`Schema applied in ${((Date.now() - started) / 1000).toFixed(1)}s.`);
+	console.info(
+		`Schema applied in ${((Date.now() - started) / 1000).toFixed(1)}s.`,
+	);
 };
 
 /**
@@ -190,6 +192,7 @@ const applySchema = async () => {
 	await migrateIpoApplications();
 	await migrateNewsImpacts();
 	await migrateUserProfiles();
+	await migrateAds();
 
 	// Indexes for faster search and retrieval
 	await sql`
@@ -1664,6 +1667,30 @@ const migrateNewsImpacts = async () => {
     UPDATE news SET affected_stocks = '{}'::jsonb
     WHERE jsonb_typeof(affected_stocks) IS DISTINCT FROM 'object'
     `;
+};
+
+/**
+ * Sponsor ads, one per slot the player app reserves (see AD_SLOTS in
+ * controller/ads.ts). A row exists once an image has been uploaded for it.
+ */
+const migrateAds = async () => {
+	await sql`
+    CREATE TABLE IF NOT EXISTS ads (
+        slot VARCHAR(40) PRIMARY KEY,
+        sponsor VARCHAR(100) NOT NULL DEFAULT '',
+        link_url TEXT,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        content_type VARCHAR(20) NOT NULL,
+        data BYTEA NOT NULL,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`;
+	// One row: the organisers' switch that shows or hides every ad at once.
+	await sql`
+    CREATE TABLE IF NOT EXISTS ad_settings (
+        id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+        enabled BOOLEAN NOT NULL DEFAULT TRUE
+    )`;
+	await sql`INSERT INTO ad_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`;
 };
 
 const migrateLivePrice = async () => {
