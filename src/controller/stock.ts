@@ -90,14 +90,20 @@ export const getOHLCByStockId = async (stockId: number, limit?: number) => {
 		JOIN stocks s ON s.id = o.stock_id
 		ORDER BY o.timestamp ASC
 	`;
-	return result.map(({ stock_starting_price, ...candle }) => ({
-		...candle,
-		change_pct:
-			sinceStart(
-				Number(candle.close_price),
-				stock_starting_price as number | null,
-			)?.change_pct ?? null,
-	})) as unknown as (StockOHLC & { change_pct: number | null })[];
+	return result.map(({ stock_starting_price, ...candle }) => {
+		const move = sinceStart(
+			Number(candle.close_price),
+			stock_starting_price as number | null,
+		);
+		return {
+			...candle,
+			change: move?.change ?? null,
+			change_pct: move?.change_pct ?? null,
+		};
+	}) as unknown as (StockOHLC & {
+		change: number | null;
+		change_pct: number | null;
+	})[];
 };
 
 export const getCurrentPrice = async (stockId: number) => {

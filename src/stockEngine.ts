@@ -701,14 +701,16 @@ const runTick = async () => {
 		// Players see every move measured from the starting price; it is worked
 		// out here, once, and travels with the candle.
 		const move = sinceStart(state.price, stock.startingPrice);
-		playerCandles.push({
+		const playerCandle = {
 			...candle,
 			change: move?.change ?? null,
 			change_pct: move?.change_pct ?? null,
-		});
+		};
+		playerCandles.push(playerCandle);
 		// Admin panel compatibility: it still listens for one message per
-		// stock. Players only get the batched marketTick below.
-		emitToAdmins("stockPriceUpdate", candle);
+		// stock. Players only get the batched marketTick below. The move since
+		// the start goes too, for the admin chart's legend.
+		emitToAdmins("stockPriceUpdate", playerCandle);
 	}
 
 	// One message per second for the whole market, instead of one per stock.
