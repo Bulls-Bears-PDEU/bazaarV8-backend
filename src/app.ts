@@ -28,6 +28,7 @@ import marketRouter from "./routes/market.js";
 import newsRouter from "./routes/news.js";
 import orderRouter from "./routes/orders.js";
 import portfolioRouter from "./routes/portfolio.js";
+import publicRouter from "./routes/public.js";
 import stockRouter from "./routes/stock.js";
 import userRouter from "./routes/user.js";
 import watchlistRouter from "./routes/watchlist.js";
@@ -102,6 +103,8 @@ app.use("/portfolio", portfolioRouter);
 app.use("/watchlists", watchlistRouter);
 app.use("/alerts", alertRouter);
 app.use("/ads", adRouter);
+// No session needed: the live board on the auditorium projector.
+app.use("/public", publicRouter);
 
 const httpServer = createServer(app);
 const io = new Server(httpServer, {

@@ -61,6 +61,37 @@ export const LEADERBOARD_REFRESH_MS = 10_000;
 let board: Board | null = null;
 let refreshing: Promise<Board> | null = null;
 
+/**
+ * How far each player has climbed over roughly the last few minutes, for the
+ * live board on the projector. Every refresh's ranks are kept, at most one set
+ * per half refresh (trades re-rank more often), and players are compared with
+ * the oldest set still inside the window.
+ */
+const RANK_CHANGE_WINDOW_MS = 5 * 60_000;
+const rankHistory: { at: number; ranks: Map<string, number> }[] = [];
+
+const recordRanks = (rows: Standing[]) => {
+	const now = Date.now();
+	const latest = rankHistory[rankHistory.length - 1];
+	if (latest && now - latest.at < LEADERBOARD_REFRESH_MS / 2) return;
+	rankHistory.push({
+		at: now,
+		ranks: new Map(rows.map((row) => [row.id, row.rank])),
+	});
+	while (
+		rankHistory.length > 1 &&
+		now - rankHistory[0].at > RANK_CHANGE_WINDOW_MS
+	) {
+		rankHistory.shift();
+	}
+};
+
+/** Places climbed (positive) or fallen in the window; null for a player not ranked at its start. */
+export const rankChange = (standing: Standing): number | null => {
+	const before = rankHistory[0]?.ranks.get(standing.id);
+	return before === undefined ? null : before - standing.rank;
+};
+
 const loadBoard = async (): Promise<Board> => {
 	const rows = (await sql`
 		${NET_WORTH_CTE}
@@ -72,6 +103,7 @@ const loadBoard = async (): Promise<Board> => {
 		FROM ranked
 		ORDER BY rank, name
 	`) as Standing[];
+	recordRanks(rows);
 	return { rows, byId: new Map(rows.map((row) => [row.id, row])) };
 };
 
